@@ -420,7 +420,7 @@ Light:
   m_CullingMask:
     serializedVersion: 2
     m_Bits: 4294967295
-  m_RenderingLayerMask: 1
+  m_RenderingLayerMask: 4294967295
   m_Lightmapping: 4
   m_LightShadowCasterMode: 0
   m_AreaSize: {x: 1, y: 1}
@@ -467,7 +467,7 @@ MonoBehaviour:
   m_UsePipelineSettings: 1
   m_AdditionalLightsShadowResolutionTier: 2
   m_LightLayerMask: 1
-  m_RenderingLayers: 1
+  m_RenderingLayers: 4294967295
   m_CustomShadowLayers: 0
   m_ShadowLayerMask: 1
   m_ShadowRenderingLayers: 1
@@ -637,7 +637,7 @@ GameObject:
   - component: {fileID: 1392859681}
   - component: {fileID: 1392859680}
   - component: {fileID: 1392859679}
-  m_Layer: 0
+  m_Layer: 3
   m_Name: Floor
   m_TagString: Untagged
   m_Icon: {fileID: 0}
@@ -686,7 +686,7 @@ MeshRenderer:
   m_RayTracingAccelStructBuildFlagsOverride: 0
   m_RayTracingAccelStructBuildFlags: 1
   m_SmallMeshCulling: 1
-  m_RenderingLayerMask: 1
+  m_RenderingLayerMask: 2
   m_RendererPriority: 0
   m_Materials:
   - {fileID: 2100000, guid: 31321ba15b8f8eb4c954353edc038b1d, type: 2}
@@ -796,8 +796,8 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   showGrid: 1
-  gridWidth: 10
-  gridHeight: 10
+  gridWidth: 20
+  gridHeight: 20
   gridColor: {r: 0.23074365, g: 1, b: 0, a: 1}
   lineAlpha: 0.5
   centerGrid: 1
@@ -810,7 +810,7 @@ Grid:
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 1489532376}
   m_Enabled: 1
-  m_CellSize: {x: 2, y: 2, z: 2}
+  m_CellSize: {x: 1, y: 1, z: 1}
   m_CellGap: {x: 0, y: 0, z: 0}
   m_CellLayout: 0
   m_CellSwizzle: 0
@@ -904,7 +904,7 @@ GameObject:
   - component: {fileID: 1989182652}
   - component: {fileID: 1989182651}
   - component: {fileID: 1989182650}
-  - component: {fileID: 1989182649}
+  - component: {fileID: 1989182653}
   m_Layer: 0
   m_Name: Player
   m_TagString: Untagged
@@ -912,22 +912,6 @@ GameObject:
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
   m_IsActive: 1
---- !u!114 &1989182649
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 1989182648}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: 03a9c5b6da260be458a6789a41cb4550, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: 
-  movementJoystick: {fileID: 1397018125}
-  playerController: {fileID: 1989182651}
-  inputThreshold: 0.5
-  inputCooldown: 0.3
 --- !u!114 &1989182650
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -941,11 +925,13 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   playerController: {fileID: 1989182651}
+  movementJoystick: {fileID: 1397018125}
   moveInputAction: {fileID: -1680190386980627800, guid: 052faaac586de48259a63d0c4782560b, type: 3}
-  initialDelay: 0.5
-  repeatRate: 0.15
+  moveInterval: 0.15
   enableContinuousMovement: 1
-  mobileRepeatRate: 0.2
+  keyboardThreshold: 0.5
+  joystickDeadzone: 0.2
+  joystickThreshold: 0.5
 --- !u!114 &1989182651
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -963,15 +949,6 @@ MonoBehaviour:
   enableRotation: 1
   rotationSpeed: 10
   instantRotation: 0
-  rotateWhileMoving: 1
-  useGridBounds: 0
-  gridWidth: 10
-  gridHeight: 10
-  useCustomBounds: 0
-  minX: -50
-  maxX: 50
-  minZ: -50
-  maxZ: 50
   allowMovementQueue: 1
   instantMovement: 0
   currentGridPosition: {x: 0, y: 0, z: 0}
@@ -996,6 +973,33 @@ RectTransform:
   m_AnchoredPosition: {x: 0, y: 0.164}
   m_SizeDelta: {x: 100, y: 100}
   m_Pivot: {x: 0.5, y: 0.5}
+--- !u!114 &1989182653
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1989182648}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: af3be85c2b7a052488c4dc9edf115105, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  decalPrefab: {fileID: 8693797975403819960, guid: f9ea852dfbad2864cabeeaca5ba9a9ad, type: 3}
+  trailDecalMaterial: {fileID: 2100000, guid: 0385235384a62bd4492c28f8dd5f7ab1, type: 2}
+  enableTrail: 1
+  limitTrailLength: 0
+  maxTrailLength: 50
+  decalRenderingLayerMask: 2
+  fadeTrailOverTime: 1
+  trailFadeDuration: 10
+  trailStartColor: {r: 1, g: 1, b: 1, a: 1}
+  trailEndColor: {r: 1, g: 0, b: 0, a: 1}
+  trailYHeight: 0.5
+  trailParentName: Player Trails
+  organizeInParent: 1
+  gridReference: {fileID: 1489532379}
+  playerController: {fileID: 1989182651}
 --- !u!1 &2003101378
 GameObject:
   m_ObjectHideFlags: 0

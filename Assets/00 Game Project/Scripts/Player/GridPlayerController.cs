@@ -1,4 +1,4 @@
-using UnityEngine;
+﻿using UnityEngine;
 using System.Collections;
 
 public class GridPlayerController : MonoBehaviour
@@ -11,23 +11,16 @@ public class GridPlayerController : MonoBehaviour
     public bool enableRotation = true;
     public float rotationSpeed = 10f;
     public bool instantRotation = false;
-    public bool rotateWhileMoving = true;
 
     [Header("Movement Options")]
-    public bool useGridBounds = false;
-    public int gridWidth = 10;
-    public int gridHeight = 10;
-
-    [Header("Alternative Bounds")]
-    public bool useCustomBounds = false;
-    public int minX = -50;
-    public int maxX = 50;
-    public int minZ = -50;
-    public int maxZ = 50;
-
-    [Header("Continuous Movement")]
     public bool allowMovementQueue = true;
     public bool instantMovement = false;
+
+    [Header("Trail Integration")]
+    [Tooltip("Reference to trail manager for movement blocking")]
+    public PlayerTrailManager trailManager;
+    [Tooltip("Show feedback when move is blocked")]
+    public bool showBlockedMoveFeedback = true;
 
     [Header("Current State")]
     public Vector3Int currentGridPosition;
@@ -44,13 +37,16 @@ public class GridPlayerController : MonoBehaviour
         if (grid == null)
             grid = FindFirstObjectByType<Grid>();
 
+        // ✅ Auto-find trail manager if not assigned
+        if (trailManager == null)
+            trailManager = GetComponent<PlayerTrailManager>();
+
         currentGridPosition = grid.WorldToCell(transform.position);
         SnapToGrid();
     }
 
     public void MoveToDirection(Vector2Int direction)
     {
-        // Roteer eerst als dat nodig is
         if (enableRotation && direction != Vector2Int.zero)
         {
             RotateToDirection(direction);
@@ -73,17 +69,33 @@ public class GridPlayerController : MonoBehaviour
 
         Vector3Int targetPosition = currentGridPosition + new Vector3Int(direction.x, 0, direction.y);
 
-        if (IsValidGridPosition(targetPosition))
+        // ✅ Check if movement is allowed (trail blocking)
+        if (!CanMoveTo(targetPosition))
         {
-            moveCoroutine = StartCoroutine(MoveToPosition(targetPosition));
+            if (showBlockedMoveFeedback)
+            {
+                Debug.Log($"Movement blocked by trail at position: {targetPosition}");
+            }
+            return;
         }
+
+        moveCoroutine = StartCoroutine(MoveToPosition(targetPosition));
+    }
+
+    // ✅ Check if position is accessible
+    private bool CanMoveTo(Vector3Int targetPosition)
+    {
+        // Als geen trail manager, altijd toestaan
+        if (trailManager == null) return true;
+
+        // Check of target position blocked is
+        return trailManager.CanMoveToPosition(currentGridPosition, targetPosition);
     }
 
     private void RotateToDirection(Vector2Int direction)
     {
         if (!enableRotation || direction == Vector2Int.zero) return;
 
-        // Bereken doelrotatie gebaseerd op bewegingsrichting
         float targetAngle = GetAngleFromDirection(direction);
         Quaternion targetRotation = Quaternion.Euler(0, targetAngle, 0);
 
@@ -93,7 +105,6 @@ public class GridPlayerController : MonoBehaviour
         }
         else
         {
-            // Start smooth rotation coroutine
             if (rotateCoroutine != null)
                 StopCoroutine(rotateCoroutine);
 
@@ -103,13 +114,11 @@ public class GridPlayerController : MonoBehaviour
 
     private float GetAngleFromDirection(Vector2Int direction)
     {
-        // Converteer grid direction naar world angle
-        if (direction == Vector2Int.up) return 0f;        // Noord
-        if (direction == Vector2Int.right) return 90f;    // Oost  
-        if (direction == Vector2Int.down) return 180f;    // Zuid
-        if (direction == Vector2Int.left) return 270f;    // West
+        if (direction == Vector2Int.up) return 0f;
+        if (direction == Vector2Int.right) return 90f;
+        if (direction == Vector2Int.down) return 180f;
+        if (direction == Vector2Int.left) return 270f;
 
-        // Voor diagonale beweging (als je dat later wilt toevoegen)
         return Mathf.Atan2(direction.x, direction.y) * Mathf.Rad2Deg;
     }
 
@@ -137,36 +146,22 @@ public class GridPlayerController : MonoBehaviour
     {
         Vector3Int targetPosition = currentGridPosition + new Vector3Int(direction.x, 0, direction.y);
 
-        if (IsValidGridPosition(targetPosition))
+        // ✅ Check movement blocking voor instant movement
+        if (!CanMoveTo(targetPosition))
         {
-            currentGridPosition = targetPosition;
-            Vector3 targetPos = grid.CellToWorld(currentGridPosition);
-            targetPos += grid.cellSize * 0.5f;
-            targetPos.y = transform.position.y;
-            transform.position = targetPos;
-        }
-    }
-
-    private bool IsValidGridPosition(Vector3Int gridPos)
-    {
-        if (!useGridBounds && !useCustomBounds)
-        {
-            return true;
+            if (showBlockedMoveFeedback)
+            {
+                Debug.Log($"Instant movement blocked by trail at position: {targetPosition}");
+            }
+            return;
         }
 
-        if (useGridBounds)
-        {
-            return gridPos.x >= 0 && gridPos.x < gridWidth &&
-                   gridPos.z >= 0 && gridPos.z < gridHeight;
-        }
+        currentGridPosition = targetPosition;
 
-        if (useCustomBounds)
-        {
-            return gridPos.x >= minX && gridPos.x <= maxX &&
-                   gridPos.z >= minZ && gridPos.z <= maxZ;
-        }
-
-        return true;
+        Vector3 targetPos = grid.CellToWorld(currentGridPosition);
+        targetPos += grid.cellSize * 0.5f;
+        targetPos.y = transform.position.y;
+        transform.position = targetPos;
     }
 
     private IEnumerator MoveToPosition(Vector3Int targetGridPos)
@@ -193,7 +188,6 @@ public class GridPlayerController : MonoBehaviour
         currentGridPosition = targetGridPos;
         isMoving = false;
 
-        // Process queued movement
         if (queuedDirection != Vector2Int.zero && allowMovementQueue)
         {
             Vector2Int nextDirection = queuedDirection;
@@ -210,7 +204,7 @@ public class GridPlayerController : MonoBehaviour
         transform.position = worldPos;
     }
 
-    // Public methods voor externe toegang
+    // Public methods
     public void SetRotationEnabled(bool enabled)
     {
         enableRotation = enabled;
@@ -236,6 +230,18 @@ public class GridPlayerController : MonoBehaviour
         return isRotating;
     }
 
+    // ✅ Trail integration methods
+    public bool IsPositionBlocked(Vector3Int gridPosition)
+    {
+        if (trailManager == null) return false;
+        return trailManager.IsPositionBlocked(gridPosition);
+    }
+
+    public void SetTrailManager(PlayerTrailManager manager)
+    {
+        trailManager = manager;
+    }
+
     public Vector3Int WorldToGrid(Vector3 worldPosition)
     {
         return grid.WorldToCell(worldPosition);
@@ -248,20 +254,33 @@ public class GridPlayerController : MonoBehaviour
 
     void OnDrawGizmos()
     {
-        if (useCustomBounds)
-        {
-            Gizmos.color = Color.red;
-            Vector3 center = new Vector3((minX + maxX) * 0.5f, 0, (minZ + maxZ) * 0.5f);
-            Vector3 size = new Vector3(maxX - minX + 1, 0.1f, maxZ - minZ + 1);
-            Gizmos.DrawWireCube(center, size);
-        }
-
         // Toon bewegingsrichting
         if (Application.isPlaying && lastMoveDirection != Vector2Int.zero)
         {
             Gizmos.color = Color.green;
             Vector3 forward = transform.forward * 0.5f;
             Gizmos.DrawRay(transform.position, forward);
+        }
+
+        // ✅ Toon blocked directions
+        if (Application.isPlaying && trailManager != null && trailManager.blockMovementOnTrails)
+        {
+            Gizmos.color = Color.red;
+            Vector2Int[] directions = { Vector2Int.up, Vector2Int.right, Vector2Int.down, Vector2Int.left };
+
+            foreach (Vector2Int dir in directions)
+            {
+                Vector3Int targetPos = currentGridPosition + new Vector3Int(dir.x, 0, dir.y);
+                if (trailManager.IsPositionBlocked(targetPos))
+                {
+                    Vector3 worldPos = grid.CellToWorld(targetPos);
+                    worldPos += grid.cellSize * 0.5f;
+                    Vector3 direction = (worldPos - transform.position).normalized * 0.3f;
+
+                    Gizmos.DrawLine(transform.position, transform.position + direction);
+                    Gizmos.DrawWireSphere(transform.position + direction, 0.1f);
+                }
+            }
         }
     }
 }
