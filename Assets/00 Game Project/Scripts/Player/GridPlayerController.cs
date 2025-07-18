@@ -18,7 +18,7 @@ public class GridPlayerController : MonoBehaviour
 
     [Header("Trail Integration")]
     [Tooltip("Reference to trail manager for movement blocking")]
-    public PlayerTrailManager trailManager;
+    public PlayerTrailManager trailManager; // ✅ Nu public!
     [Tooltip("Show feedback when move is blocked")]
     public bool showBlockedMoveFeedback = true;
 
@@ -37,12 +37,15 @@ public class GridPlayerController : MonoBehaviour
         if (grid == null)
             grid = FindFirstObjectByType<Grid>();
 
-        // ✅ Auto-find trail manager if not assigned
+        // Auto-find trail manager if not assigned
         if (trailManager == null)
             trailManager = GetComponent<PlayerTrailManager>();
 
         currentGridPosition = grid.WorldToCell(transform.position);
         SnapToGrid();
+
+        // ✅ Debug info
+        Debug.Log($"GridPlayerController initialized. Grid: {grid}, TrailManager: {trailManager}");
     }
 
     public void MoveToDirection(Vector2Int direction)
@@ -69,7 +72,7 @@ public class GridPlayerController : MonoBehaviour
 
         Vector3Int targetPosition = currentGridPosition + new Vector3Int(direction.x, 0, direction.y);
 
-        // ✅ Check if movement is allowed (trail blocking)
+        // Check if movement is allowed (trail blocking)
         if (!CanMoveTo(targetPosition))
         {
             if (showBlockedMoveFeedback)
@@ -82,7 +85,7 @@ public class GridPlayerController : MonoBehaviour
         moveCoroutine = StartCoroutine(MoveToPosition(targetPosition));
     }
 
-    // ✅ Check if position is accessible
+    // Check if position is accessible
     private bool CanMoveTo(Vector3Int targetPosition)
     {
         // Als geen trail manager, altijd toestaan
@@ -146,7 +149,7 @@ public class GridPlayerController : MonoBehaviour
     {
         Vector3Int targetPosition = currentGridPosition + new Vector3Int(direction.x, 0, direction.y);
 
-        // ✅ Check movement blocking voor instant movement
+        // Check movement blocking voor instant movement
         if (!CanMoveTo(targetPosition))
         {
             if (showBlockedMoveFeedback)
@@ -230,7 +233,13 @@ public class GridPlayerController : MonoBehaviour
         return isRotating;
     }
 
-    // ✅ Trail integration methods
+    // ✅ Public getter for TrailManager
+    public PlayerTrailManager GetTrailManager()
+    {
+        return trailManager;
+    }
+
+    // Trail integration methods
     public bool IsPositionBlocked(Vector3Int gridPosition)
     {
         if (trailManager == null) return false;
@@ -262,7 +271,7 @@ public class GridPlayerController : MonoBehaviour
             Gizmos.DrawRay(transform.position, forward);
         }
 
-        // ✅ Toon blocked directions
+        // Toon blocked directions
         if (Application.isPlaying && trailManager != null && trailManager.blockMovementOnTrails)
         {
             Gizmos.color = Color.red;

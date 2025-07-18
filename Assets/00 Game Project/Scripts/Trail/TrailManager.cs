@@ -7,20 +7,31 @@ public class PlayerTrailManager : MonoBehaviour
     [Header("Trail Settings")]
     public GameObject decalPrefab;
     public Material trailDecalMaterial;
+    [Tooltip("Deze Boolean functie bepaald of de speler mag starten met een Trail. Als je wilt dat de Trail pas mag starten zodra de speler poep" +
+             "heeft opgepakt, dan zet je de enableTrail uit.")]
     public bool enableTrail = true;
     public bool limitTrailLength = false;
     public int maxTrailLength = 50;
 
+    [Header("Temporary Trail System")]
+    [Tooltip("Hoeveel tiles de tijdelijke trail nog actief is")]
+    public int temporaryTrailTilesRemaining = 0;
+    [Tooltip("Material voor tijdelijke trails (anders dan normale)")]
+    public Material temporaryTrailMaterial;
+    [Tooltip("Kleur voor tijdelijke trails")]
+    public Color temporaryTrailColor = Color.green;
+
     [Header("Movement Blocking")]
-    [Tooltip("Voorkom movement naar posities met trails")]
+    [Tooltip("Deze Boolean bepaald of de speler over zijn eigen stront mag lopen.")]
     public bool blockMovementOnTrails = true;
-    [Tooltip("Speler kan zijn eigen starting positie verlaten")]
     public bool allowLeavingStartPosition = true;
 
     [Header("Rendering Layer Settings")]
+    [Tooltip("Deze waarde bepaalt op welke Rendering Layer het object getoond wordt, 2 staat voor ground Rendering Layer.")]
     public uint decalRenderingLayerMask = 2; // Ground layer
 
     [Header("Trail Visual Settings")]
+    [Tooltip("Deze Boolean bepaald of de Trail na loop van tijd wordt verwijderd, als de speler te sloom is.")]
     public bool fadeTrailOverTime = true;
     public float trailFadeDuration = 10f;
     public Color trailStartColor = Color.white;
@@ -39,7 +50,7 @@ public class PlayerTrailManager : MonoBehaviour
     [Header("References")]
     public GridPlayerController playerController;
 
-    // ✅ Trail position tracking
+    // Trail tracking
     private HashSet<Vector3Int> trailPositions = new HashSet<Vector3Int>();
     private Queue<TrailDecal> activeTrails = new Queue<TrailDecal>();
     private Transform trailParent;
@@ -52,13 +63,15 @@ public class PlayerTrailManager : MonoBehaviour
         public DecalProjector decalProjector;
         public Vector3Int gridPosition;
         public float spawnTime;
+        public bool isTemporary;
 
-        public TrailDecal(GameObject obj, DecalProjector projector, Vector3Int pos)
+        public TrailDecal(GameObject obj, DecalProjector projector, Vector3Int pos, bool temporary = false)
         {
             decalObject = obj;
             decalProjector = projector;
             gridPosition = pos;
             spawnTime = Time.time;
+            isTemporary = temporary;
         }
     }
 
@@ -70,7 +83,6 @@ public class PlayerTrailManager : MonoBehaviour
         if (playerController == null)
             playerController = FindFirstObjectByType<GridPlayerController>();
 
-        // Onthoud start positie van speler
         if (playerController != null)
         {
             playerStartPosition = playerController.currentGridPosition;
@@ -84,18 +96,28 @@ public class PlayerTrailManager : MonoBehaviour
 
     void Update()
     {
-        if (enableTrail && playerController != null)
+        if (playerController != null)
         {
             Vector3Int currentGridPos = playerController.currentGridPosition;
 
-            // Voeg trail toe als speler naar nieuwe positie beweegt
-            if (!trailPositions.Contains(currentGridPos))
+            // Check of we trail moeten toevoegen
+            bool shouldAddTrail = (enableTrail || temporaryTrailTilesRemaining > 0)
+                                && !trailPositions.Contains(currentGridPos);
+
+            if (shouldAddTrail)
             {
-                AddTrailAtPosition(currentGridPos);
+                bool isTemporaryTrail = temporaryTrailTilesRemaining > 0;
+                AddTrailAtPosition(currentGridPos, isTemporaryTrail);
+
+                // Verlaag temporary trail counter
+                if (temporaryTrailTilesRemaining > 0)
+                {
+                    temporaryTrailTilesRemaining--;
+                    Debug.Log($"💩 Temporary trail: {temporaryTrailTilesRemaining} tiles remaining");
+                }
             }
         }
 
-        // Update trail fading
         if (fadeTrailOverTime)
         {
             UpdateTrailFading();
@@ -134,10 +156,8 @@ public class PlayerTrailManager : MonoBehaviour
         decalPrefab.SetActive(false);
     }
 
-    private void AddTrailAtPosition(Vector3Int gridPosition)
+    private void AddTrailAtPosition(Vector3Int gridPosition, bool isTemporary = false)
     {
-        if (!enableTrail) return;
-
         // Markeer positie als bezocht
         trailPositions.Add(gridPosition);
 
@@ -154,8 +174,27 @@ public class PlayerTrailManager : MonoBehaviour
         DecalProjector projector = trailDecal.GetComponent<DecalProjector>();
         projector.renderingLayerMask = decalRenderingLayerMask;
 
-        TrailDecal newTrail = new TrailDecal(trailDecal, projector, gridPosition);
+        // ✅ Gebruik verschillende materials voor normale vs temporary trails
+        if (isTemporary && temporaryTrailMaterial != null)
+        {
+            projector.material = temporaryTrailMaterial;
+            trailDecal.name = "Temporary Trail Decal";
+        }
+        else if (isTemporary)
+        {
+            // Gebruik normale material maar met andere kleur
+            Material tempMat = new Material(trailDecalMaterial);
+            tempMat.SetColor("_Color", temporaryTrailColor);
+            projector.material = tempMat;
+            trailDecal.name = "Temporary Trail Decal";
+        }
+        else
+        {
+            projector.material = trailDecalMaterial;
+            trailDecal.name = "Normal Trail Decal";
+        }
 
+        TrailDecal newTrail = new TrailDecal(trailDecal, projector, gridPosition, isTemporary);
         activeTrails.Enqueue(newTrail);
 
         if (limitTrailLength && activeTrails.Count > maxTrailLength)
@@ -169,8 +208,6 @@ public class PlayerTrailManager : MonoBehaviour
         if (activeTrails.Count > 0)
         {
             TrailDecal oldestTrail = activeTrails.Dequeue();
-
-            // ✅ Verwijder uit blocked positions
             trailPositions.Remove(oldestTrail.gridPosition);
 
             if (oldestTrail.decalObject != null)
@@ -197,15 +234,15 @@ public class PlayerTrailManager : MonoBehaviour
 
             if (age >= trailFadeDuration)
             {
-                // ✅ Trail is te oud, verwijder uit blocked positions
                 trailPositions.Remove(trail.gridPosition);
                 Destroy(trail.decalObject);
             }
             else
             {
-                // Update fade
                 float fadeProgress = age / trailFadeDuration;
-                Color currentColor = Color.Lerp(trailStartColor, trailEndColor, fadeProgress);
+                Color startColor = trail.isTemporary ? temporaryTrailColor : trailStartColor;
+                Color endColor = trail.isTemporary ? Color.clear : trailEndColor;
+                Color currentColor = Color.Lerp(startColor, endColor, fadeProgress);
 
                 Material instanceMaterial = trail.decalProjector.material;
                 if (instanceMaterial.HasProperty("_Color"))
@@ -220,12 +257,28 @@ public class PlayerTrailManager : MonoBehaviour
         activeTrails = tempQueue;
     }
 
-    // ✅ Public API for movement checking
+    // ✅ Public API voor poep powerup system
+    public void ActivateTemporaryTrail(int tileCount)
+    {
+        temporaryTrailTilesRemaining += tileCount;
+        Debug.Log($"💩 Temporary trail activated! {temporaryTrailTilesRemaining} tiles total");
+    }
+
+    public bool IsTemporaryTrailActive()
+    {
+        return temporaryTrailTilesRemaining > 0;
+    }
+
+    public int GetTemporaryTrailTilesRemaining()
+    {
+        return temporaryTrailTilesRemaining;
+    }
+
+    // Movement blocking API
     public bool IsPositionBlocked(Vector3Int gridPosition)
     {
         if (!blockMovementOnTrails) return false;
 
-        // Allow leaving start position
         if (allowLeavingStartPosition && gridPosition == playerStartPosition)
             return false;
 
@@ -236,7 +289,6 @@ public class PlayerTrailManager : MonoBehaviour
     {
         if (!blockMovementOnTrails) return true;
 
-        // Allow leaving start position
         if (allowLeavingStartPosition && fromPosition == playerStartPosition)
             return true;
 
@@ -246,16 +298,6 @@ public class PlayerTrailManager : MonoBehaviour
     public HashSet<Vector3Int> GetBlockedPositions()
     {
         return new HashSet<Vector3Int>(trailPositions);
-    }
-
-    public int GetTrailLength()
-    {
-        return activeTrails.Count;
-    }
-
-    public int GetBlockedPositionCount()
-    {
-        return trailPositions.Count;
     }
 
     // Trail management methods
@@ -269,6 +311,7 @@ public class PlayerTrailManager : MonoBehaviour
         }
 
         trailPositions.Clear();
+        temporaryTrailTilesRemaining = 0;
     }
 
     public void SetTrailEnabled(bool enabled)
@@ -281,56 +324,54 @@ public class PlayerTrailManager : MonoBehaviour
         blockMovementOnTrails = enabled;
     }
 
-    public void SetDecalRenderingLayers(uint renderingMask)
-    {
-        decalRenderingLayerMask = renderingMask;
-
-        // Update bestaande decals
-        foreach (TrailDecal trail in activeTrails)
-        {
-            if (trail.decalProjector != null)
-            {
-                trail.decalProjector.renderingLayerMask = renderingMask;
-            }
-        }
-    }
-
     // Debug methods
     [ContextMenu("Log Trail Info")]
     public void LogTrailInfo()
     {
         Debug.Log($"Active Trails: {activeTrails.Count}");
         Debug.Log($"Blocked Positions: {trailPositions.Count}");
-        Debug.Log($"Movement Blocking: {blockMovementOnTrails}");
-
-        foreach (Vector3Int pos in trailPositions)
-        {
-            Debug.Log($"Blocked: {pos}");
-        }
+        Debug.Log($"Temporary Trail Tiles Remaining: {temporaryTrailTilesRemaining}");
     }
 
     void OnDrawGizmos()
     {
-        if (!Application.isPlaying || !blockMovementOnTrails) return;
+        if (!Application.isPlaying) return;
 
-        // Toon blocked positions
-        Gizmos.color = Color.red;
-        foreach (Vector3Int gridPos in trailPositions)
+        // Toon blocked positions (normale trails)
+        if (blockMovementOnTrails)
         {
-            if (gridReference != null)
+            Gizmos.color = Color.red;
+            foreach (Vector3Int gridPos in trailPositions)
             {
-                Vector3 worldPos = gridReference.CellToWorld(gridPos);
-                worldPos += gridReference.cellSize * 0.5f;
-                worldPos.y += 0.1f;
+                if (gridReference != null)
+                {
+                    Vector3 worldPos = gridReference.CellToWorld(gridPos);
+                    worldPos += gridReference.cellSize * 0.5f;
+                    worldPos.y += 0.1f;
 
-                Gizmos.DrawWireCube(worldPos, gridReference.cellSize * 0.9f);
+                    Gizmos.DrawWireCube(worldPos, gridReference.cellSize * 0.9f);
+                }
+            }
+        }
+
+        // Toon temporary trail indicator
+        if (temporaryTrailTilesRemaining > 0)
+        {
+            Gizmos.color = Color.green;
+            if (playerController != null && gridReference != null)
+            {
+                Vector3 playerPos = gridReference.CellToWorld(playerController.currentGridPosition);
+                playerPos += gridReference.cellSize * 0.5f;
+                playerPos.y += 0.3f;
+
+                Gizmos.DrawWireSphere(playerPos, 0.5f);
             }
         }
 
         // Toon start position
         if (allowLeavingStartPosition)
         {
-            Gizmos.color = Color.green;
+            Gizmos.color = Color.blue;
             Vector3 startWorldPos = gridReference.CellToWorld(playerStartPosition);
             startWorldPos += gridReference.cellSize * 0.5f;
             startWorldPos.y += 0.2f;
