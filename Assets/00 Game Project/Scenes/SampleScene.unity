@@ -1110,9 +1110,9 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   grid: {fileID: 1489532379}
-  moveSpeed: 0.5
+  moveSpeed: 0.2
   enableRotation: 1
-  rotationSpeed: 4
+  rotationSpeed: 8
   movementCurve:
     serializedVersion: 2
     m_Curve:
@@ -1145,9 +1145,9 @@ MonoBehaviour:
   - {x: -8, y: 0, z: 8}
   - {x: -8, y: 0, z: -8}
   - {x: 8, y: 0, z: -8}
-  waitTimeAtPoint: 3
-  useRandomWaitTime: 1
-  randomWaitRange: {x: 2, y: 5}
+  waitTimeAtPoint: 2
+  useRandomWaitTime: 0
+  randomWaitRange: {x: 1, y: 3}
   enableLookAround: 1
   lookAroundDuration: 3
   lookDirections: 4
@@ -1155,27 +1155,38 @@ MonoBehaviour:
   randomLookOrder: 1
   timeBetweenLooks: 0.5
   fovAngle: 120
-  fovRange: 10
+  fovRange: 6
   fovResolution: 20
   useFovForDetection: 1
   obstacleLayer:
     serializedVersion: 2
     m_Bits: 63
-  detectionRange: 3
   player: {fileID: 1989182652}
   playerLayer:
     serializedVersion: 2
     m_Bits: 64
   chasePlayer: 0
+  detectionRange: 3
+  investigateTrails: 1
+  trailCleanupTime: 3
+  trailInvestigationTime: 2
+  prioritizeNewestTrails: 0
+  alwaysClosestFirst: 1
+  trailTargetColor: {r: 1, g: 0.6470588, b: 0, a: 1}
   showPatrolPath: 1
   showDetectionRange: 1
   showFieldOfView: 1
   showFovInEditor: 1
+  showTrailDetection: 1
   patrolPathColor: {r: 1, g: 0.92156863, b: 0.015686275, a: 1}
   detectionColor: {r: 1, g: 0, b: 0, a: 1}
-  fovColor: {r: 1, g: 0, b: 0, a: 0.2}
+  fovColor: {r: 1, g: 0, b: 0, a: 0.3}
   fovBorderColor: {r: 1, g: 0, b: 0, a: 1}
   fovEditorColor: {r: 1, g: 0, b: 0, a: 0.1}
+  requireTrailInFOV: 0
+  requirePlayerInFOV: 1
+  showFOVCleanupDebug: 1
+  fovCleanupColor: {r: 0, g: 1, b: 1, a: 1}
   currentGridPosition: {x: 0, y: 0, z: 0}
   currentState: 0
 --- !u!4 &1874545372

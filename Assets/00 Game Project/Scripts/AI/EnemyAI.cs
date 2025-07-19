@@ -39,18 +39,17 @@ public class EnemyAI : MonoBehaviour
     public LayerMask obstacleLayer = -1;
 
     [Header("Detection")]
-    public float detectionRange = 3f;
     public Transform player;
     public LayerMask playerLayer = -1;
     public bool chasePlayer = false;
+    public float detectionRange = 5f;
 
     [Header("Trail Investigation")]
     public bool investigateTrails = true;
-    public float trailDetectionRange = 6f;
     public float trailCleanupTime = 3f;
     public float trailInvestigationTime = 2f;
-    public bool prioritizeNewestTrails = false; // Dit gaan we niet meer gebruiken
-    public bool alwaysClosestFirst = true; // Nieuwe setting
+    public bool prioritizeNewestTrails = false;
+    public bool alwaysClosestFirst = true;
     public Color trailTargetColor = Color.orange;
 
     [Header("Visual Feedback")]
@@ -64,6 +63,12 @@ public class EnemyAI : MonoBehaviour
     public Color fovColor = new Color(1f, 0f, 0f, 0.3f);
     public Color fovBorderColor = Color.red;
     public Color fovEditorColor = new Color(1f, 0f, 0f, 0.1f);
+
+    [Header("FOV Cleanup Settings")]
+    public bool requireTrailInFOV = false;      // Trail moet binnen FOV zijn voor cleanup
+    public bool requirePlayerInFOV = false;     // Player moet binnen FOV zijn voor cleanup
+    public bool showFOVCleanupDebug = true;
+    public Color fovCleanupColor = Color.cyan;
 
     [Header("Current State")]
     public Vector3Int currentGridPosition;
@@ -103,10 +108,10 @@ public class EnemyAI : MonoBehaviour
     private PlayerTrailManager trailManager;
     private Vector3Int currentTrailTarget;
     private List<Vector3Int> discoveredTrails = new List<Vector3Int>();
-    private List<Vector3Int> currentlyInvestigating = new List<Vector3Int>(); // Nieuwe lijst
+    private List<Vector3Int> currentlyInvestigating = new List<Vector3Int>();
     private bool hasTrailTarget = false;
     private float lastTrailCheckTime = 0f;
-    private float trailCheckInterval = 1f; // Verhoogd naar 1 seconde
+    private float trailCheckInterval = 1f;
 
     // Field of View data
     private Mesh fovMesh;
@@ -144,7 +149,7 @@ public class EnemyAI : MonoBehaviour
             lastTrailCheckTime = Time.time;
         }
 
-        // GEFIXT: Verbeterde state handling
+        // State handling
         bool canHandleState = !isMoving && !isWaiting && !isLookingAround && !isInvestigatingTrail;
         bool isTrailMovementState = currentState == EnemyState.MovingToTrail;
 
@@ -193,24 +198,70 @@ public class EnemyAI : MonoBehaviour
 
     void CheckForTrails()
     {
+        // Valideer eerst onze trail targets
+        ValidateTrailTargets();
+
         // Get trails van PlayerTrailManager
         HashSet<Vector3Int> blockedPositions = trailManager.GetBlockedPositions();
 
         if (blockedPositions.Count == 0) return;
 
-        // Filter trails binnen detection range die nog niet onderzocht worden
+        // NIEUWE LOGICA: Check eerst of we überhaupt trails mogen onderzoeken
+        // Als alleen player FOV vereist is, check of player in FOV is VOORDAT we trails detecteren
+        if (requirePlayerInFOV && !requireTrailInFOV)
+        {
+            bool playerInFOV = IsPlayerInFieldOfView();
+            if (!playerInFOV)
+            {
+                if (showFOVCleanupDebug)
+                {
+                    Debug.Log("🚫 Player not in FOV - skipping trail detection entirely (Require Player in FOV = true)");
+                }
+                return; // Stop completely - geen trail detection
+            }
+            else
+            {
+                if (showFOVCleanupDebug)
+                {
+                    Debug.Log("✅ Player in FOV - proceeding with trail detection");
+                }
+            }
+        }
+
+        // Filter trails op FOV
         List<TrailInfo> availableTrails = new List<TrailInfo>();
 
         foreach (Vector3Int trailPos in blockedPositions)
         {
+            // Check of trail binnen FOV is
+            Vector3 trailWorldPos = grid.CellToWorld(trailPos);
+            trailWorldPos += grid.cellSize * 0.5f;
+
+            bool trailInFOV = IsPositionInFieldOfView(trailWorldPos);
+
+            // Alleen trails binnen FOV kunnen gedetecteerd worden
+            if (!trailInFOV) continue;
+
             float distance = Vector3Int.Distance(currentGridPosition, trailPos);
 
-            // Check of trail binnen range is en niet al onderzocht of bezig met onderzoeken
-            if (distance <= trailDetectionRange &&
-                !discoveredTrails.Contains(trailPos) &&
+            // Check of trail al onderzocht is
+            bool isDiscovered = discoveredTrails.Contains(trailPos);
+
+            // Als FOV requirements actief zijn, overweeg trails die al onderzocht zijn opnieuw
+            bool canReconsiderTrail = (requireTrailInFOV || requirePlayerInFOV) && isDiscovered && IsCleanupAllowedByFOV();
+
+            // Check of trail niet al onderzocht of bezig met onderzoeken
+            if ((!isDiscovered || canReconsiderTrail) &&
                 !currentlyInvestigating.Contains(trailPos))
             {
                 availableTrails.Add(new TrailInfo { position = trailPos, distance = distance });
+
+                if (canReconsiderTrail)
+                {
+                    Debug.Log($"🔄 Reconsidering trail at {trailPos} because FOV requirements are now met");
+                    // Remove uit discovered lijst zodat het opnieuw onderzocht kan worden
+                    discoveredTrails.Remove(trailPos);
+                }
             }
         }
 
@@ -221,7 +272,7 @@ public class EnemyAI : MonoBehaviour
 
             Vector3Int targetTrail = availableTrails[0].position;
 
-            Debug.Log($"🕵️ EnemyAI detected {availableTrails.Count} trails. Prioritizing closest at {targetTrail} (distance: {availableTrails[0].distance:F1})");
+            Debug.Log($"🕵️ EnemyAI detected {availableTrails.Count} trails within FOV. Prioritizing closest at {targetTrail} (distance: {availableTrails[0].distance:F1})");
             StartTrailInvestigation(targetTrail);
         }
     }
@@ -257,37 +308,26 @@ public class EnemyAI : MonoBehaviour
             currentAction = null;
         }
 
-        // GEFIXT: Reset alle flags om te zorgen dat movement kan beginnen
+        // Reset alle flags
         isWaiting = false;
         isLookingAround = false;
         isInvestigatingTrail = false;
-        isMoving = false; // TOEGEVOEGD: Zorg dat movement niet geblokkeerd wordt
+        isMoving = false;
 
         // Set state
         currentState = EnemyState.MovingToTrail;
 
         Debug.Log($"🔍 Starting trail investigation towards {trailPosition}. Current position: {currentGridPosition}");
 
-        // TOEGEVOEGD: Force eerste movement stap
+        // Force eerste movement stap
         HandleTrailMovement();
     }
-
 
     void HandleTrailMovement()
     {
         if (!hasTrailTarget)
         {
             Debug.Log("No trail target, returning to patrol");
-            currentState = EnemyState.Returning;
-            return;
-        }
-
-        // Check of de trail nog bestaat (misschien door andere AI of speler weggehaald)
-        HashSet<Vector3Int> currentTrails = trailManager.GetBlockedPositions();
-        if (!currentTrails.Contains(currentTrailTarget))
-        {
-            Debug.Log($"Trail at {currentTrailTarget} no longer exists, abandoning investigation");
-            CleanupTrailInvestigation();
             currentState = EnemyState.Returning;
             return;
         }
@@ -312,7 +352,6 @@ public class EnemyAI : MonoBehaviour
         else
         {
             Debug.LogWarning($"No valid direction to trail target {currentTrailTarget} from {currentGridPosition}");
-            // Als we geen richting kunnen vinden, stop de trail investigation
             CleanupTrailInvestigation();
             currentState = EnemyState.Returning;
         }
@@ -349,14 +388,41 @@ public class EnemyAI : MonoBehaviour
             }
         }
 
-        // Start trail cleanup timer
-        StartCoroutine(ScheduleTrailCleanup(currentTrailTarget));
+        // Check of cleanup toegestaan is
+        Vector3Int investigatedTrail = currentTrailTarget;
+
+        if (IsCleanupAllowedByFOV())
+        {
+            Debug.Log($"✅ FOV requirements met - proceeding with cleanup of trail at {investigatedTrail}");
+
+            // Directe cleanup
+            bool trailRemoved = RemoveTrailDirectly(investigatedTrail);
+
+            if (trailRemoved)
+            {
+                Debug.Log($"🧹 Trail at {investigatedTrail} removed after investigation");
+            }
+            else
+            {
+                Debug.LogWarning($"Failed to remove trail at {investigatedTrail}");
+            }
+        }
+        else
+        {
+            Debug.Log($"🚫 FOV requirements not met - trail at {investigatedTrail} will NOT be cleaned up");
+
+            // Mark trail als onderzocht maar niet opgeruimd
+            if (currentlyInvestigating.Contains(investigatedTrail))
+            {
+                currentlyInvestigating.Remove(investigatedTrail);
+            }
+        }
 
         // Reset investigation state
         CleanupTrailInvestigation();
 
-        Debug.Log("🧹 Trail investigation complete. Returning to patrol.");
-        currentState = EnemyState.Returning;
+        Debug.Log("🧹 Trail investigation complete. Resuming patrol from current position.");
+        currentState = EnemyState.Patrolling;  // ✅ DIRECT DOORGAAN MET PATROL
 
         yield return StartCoroutine(SmoothRotateToAngle(startRotation, rotationSpeed));
     }
@@ -376,23 +442,44 @@ public class EnemyAI : MonoBehaviour
         Debug.Log($"🧽 Cleaned up investigation for trail at {currentTrailTarget}");
     }
 
-    IEnumerator ScheduleTrailCleanup(Vector3Int trailPosition)
+    // NIEUWE METHODE: Direct trail removal zonder timer
+    bool RemoveTrailDirectly(Vector3Int trailPosition)
     {
-        yield return new WaitForSeconds(trailCleanupTime);
+        bool trailRemoved = false;
 
-        // Remove trail door het GameObject te zoeken en verwijderen
-        bool trailRemoved = RemoveTrailGameObject(trailPosition);
-
-        if (trailRemoved)
+        if (trailManager != null)
         {
-            Debug.Log($"🧹 EnemyAI cleaned up trail at {trailPosition}");
+            // Check of de trail nog bestaat voordat we proberen te verwijderen
+            HashSet<Vector3Int> currentTrails = trailManager.GetBlockedPositions();
+            if (currentTrails.Contains(trailPosition))
+            {
+                // Gebruik de PlayerTrailManager om de trail te verwijderen
+                trailRemoved = trailManager.RemoveTrailAt(trailPosition);
+
+                if (trailRemoved)
+                {
+                    Debug.Log($"🧹 Trail removed at {trailPosition} via TrailManager");
+                }
+                else
+                {
+                    Debug.LogWarning($"Failed to remove trail at {trailPosition} via TrailManager");
+                    // Fallback: probeer handmatig GameObject cleanup
+                    trailRemoved = RemoveTrailGameObject(trailPosition);
+                }
+            }
+            else
+            {
+                Debug.Log($"Trail at {trailPosition} was already removed from TrailManager");
+                trailRemoved = true; // Consider it "removed" if it's not in the manager anymore
+            }
         }
         else
         {
-            Debug.Log($"Trail at {trailPosition} was already removed or not found");
+            // Fallback als TrailManager niet beschikbaar is
+            trailRemoved = RemoveTrailGameObject(trailPosition);
         }
 
-        // Remove van onze lijsten na cleanup
+        // Remove van onze lijsten na cleanup (altijd doen, ook als trail al weg was)
         if (discoveredTrails.Contains(trailPosition))
         {
             discoveredTrails.Remove(trailPosition);
@@ -401,6 +488,8 @@ public class EnemyAI : MonoBehaviour
         {
             currentlyInvestigating.Remove(trailPosition);
         }
+
+        return trailRemoved;
     }
 
     bool RemoveTrailGameObject(Vector3Int gridPosition)
@@ -408,36 +497,214 @@ public class EnemyAI : MonoBehaviour
         Vector3 worldPosition = grid.CellToWorld(gridPosition);
         worldPosition += grid.cellSize * 0.5f;
 
-        // Methode 1: Zoek via Trail tag (hoofdmethode)
+        // Methode 1: Zoek via Trail tag
         GameObject[] trailObjects = GameObject.FindGameObjectsWithTag("Trail");
         foreach (GameObject obj in trailObjects)
         {
             float distance = Vector3.Distance(obj.transform.position, worldPosition);
-            if (distance < 0.5f) // 0.5 units tolerance
+            if (distance < 0.5f)
             {
-                Debug.Log($"🗑️ Found and removing trail object via tag: {obj.name} at {obj.transform.position}");
+                Debug.Log($"🗑️ Fallback: Removing trail object via tag: {obj.name}");
                 Destroy(obj);
                 return true;
             }
         }
 
-        // Fallback methode: Zoek via Physics overlap (voor het geval tag ontbreekt)
+        // Fallback methode: Zoek via Physics overlap
         Collider[] colliders = Physics.OverlapSphere(worldPosition, 0.5f);
         foreach (Collider col in colliders)
         {
             if (col.gameObject.name.Contains("Trail") || col.gameObject.name.Contains("Decal") || col.gameObject.name.Contains("Poop"))
             {
-                Debug.Log($"🗑️ Found and removing trail object via collider: {col.gameObject.name}");
+                Debug.Log($"🗑️ Fallback: Removing trail object via collider: {col.gameObject.name}");
                 Destroy(col.gameObject);
                 return true;
             }
         }
 
-        Debug.LogWarning($"Could not find trail GameObject at position {gridPosition} (world: {worldPosition})");
+        Debug.LogWarning($"Fallback: Could not find trail GameObject at position {gridPosition}");
+        return false;
+    }
+
+    // VOLLEDIGE FIX: Check FOV conditions op basis van settings
+    public bool IsCleanupAllowedByFOV()
+    {
+        // Als beide settings uit staan, altijd cleanup toestaan
+        if (!requireTrailInFOV && !requirePlayerInFOV)
+        {
+            if (showFOVCleanupDebug)
+                Debug.Log("🟢 No FOV requirements - cleanup always allowed");
+            return true;
+        }
+
+        // KRITIEKE FIX: Als alleen player FOV vereist is, negeer trail FOV compleet
+        if (requirePlayerInFOV && !requireTrailInFOV)
+        {
+            bool playerInFOV = IsPlayerInFieldOfView();
+            if (showFOVCleanupDebug)
+            {
+                Debug.Log($"👤 ONLY Player FOV required:");
+                Debug.Log($"   - Player in FOV: {playerInFOV}");
+                Debug.Log($"   - Trail FOV status is COMPLETELY IGNORED");
+                Debug.Log($"   - Result: {(playerInFOV ? "✅ CLEANUP ALLOWED" : "🚫 CLEANUP BLOCKED")}");
+            }
+            return playerInFOV;
+        }
+
+        // Als alleen trail FOV vereist is
+        if (!requirePlayerInFOV && requireTrailInFOV)
+        {
+            bool trailInFOV = IsTrailInFieldOfView();
+            if (showFOVCleanupDebug)
+            {
+                Debug.Log($"🔍 ONLY Trail FOV required:");
+                Debug.Log($"   - Trail in FOV: {trailInFOV}");
+                Debug.Log($"   - Player FOV status is COMPLETELY IGNORED");
+                Debug.Log($"   - Result: {(trailInFOV ? "✅ CLEANUP ALLOWED" : "🚫 CLEANUP BLOCKED")}");
+            }
+            return trailInFOV;
+        }
+
+        // Als beide vereist zijn
+        if (requirePlayerInFOV && requireTrailInFOV)
+        {
+            bool playerInFOV = IsPlayerInFieldOfView();
+            bool trailInFOV = IsTrailInFieldOfView();
+            bool bothRequired = playerInFOV && trailInFOV;
+
+            if (showFOVCleanupDebug)
+            {
+                Debug.Log($"📋 BOTH Player AND Trail FOV required:");
+                Debug.Log($"   - Player in FOV: {playerInFOV}");
+                Debug.Log($"   - Trail in FOV: {trailInFOV}");
+                Debug.Log($"   - Result: {(bothRequired ? "✅ CLEANUP ALLOWED" : "🚫 CLEANUP BLOCKED")}");
+            }
+            return bothRequired;
+        }
+
         return false;
     }
 
 
+
+    // NIEUWE FUNCTIE: Check of er trails binnen FOV zijn
+    bool IsTrailInFieldOfView()
+    {
+        if (trailManager == null)
+        {
+            if (showFOVCleanupDebug)
+                Debug.Log("🚫 No trail manager found");
+            return false;
+        }
+
+        // Check specifiek de current trail target als die er is
+        if (hasTrailTarget)
+        {
+            Vector3 trailWorldPos = grid.CellToWorld(currentTrailTarget);
+            trailWorldPos += grid.cellSize * 0.5f;
+            bool targetTrailInFOV = IsPositionInFieldOfView(trailWorldPos);
+
+            if (showFOVCleanupDebug)
+            {
+                Debug.Log($"🔍 Current trail target {currentTrailTarget} in FOV: {targetTrailInFOV}");
+            }
+
+            return targetTrailInFOV;
+        }
+
+        // Fallback: check alle trails
+        HashSet<Vector3Int> blockedPositions = trailManager.GetBlockedPositions();
+
+        foreach (Vector3Int trailPos in blockedPositions)
+        {
+            Vector3 trailWorldPos = grid.CellToWorld(trailPos);
+            trailWorldPos += grid.cellSize * 0.5f;
+
+            if (IsPositionInFieldOfView(trailWorldPos))
+            {
+                if (showFOVCleanupDebug)
+                    Debug.Log($"🔍 Trail at {trailPos} is within FOV");
+                return true;
+            }
+        }
+
+        if (showFOVCleanupDebug)
+            Debug.Log("🚫 No trails found within FOV");
+        return false;
+    }
+
+
+    // HELPER FUNCTIE: Check of een specifieke positie binnen FOV is
+    bool IsPositionInFieldOfView(Vector3 targetPosition)
+    {
+        Vector3 directionToTarget = (targetPosition - transform.position).normalized;
+        float distanceToTarget = Vector3.Distance(transform.position, targetPosition);
+
+        // Check range
+        if (distanceToTarget > fovRange)
+            return false;
+
+        // Check angle
+        float angleToTarget = Vector3.Angle(transform.forward, directionToTarget);
+        if (angleToTarget > fovAngle / 2f)
+            return false;
+
+        // Check line of sight (geen obstacles tussen enemy en target)
+        if (Physics.Raycast(transform.position, directionToTarget, distanceToTarget, obstacleLayer))
+            return false;
+
+        return true;
+    }
+
+    void ValidateTrailTargets()
+    {
+        if (trailManager == null) return;
+
+        HashSet<Vector3Int> blockedPositions = trailManager.GetBlockedPositions();
+
+        // Remove trails die niet meer bestaan of buiten FOV zijn
+        discoveredTrails.RemoveAll(trailPos =>
+        {
+            if (!blockedPositions.Contains(trailPos))
+            {
+                Debug.Log($"🧹 Removing discovered trail at {trailPos} - trail no longer exists");
+                return true;
+            }
+
+            // GEWIJZIGD: Check FOV in plaats van detection range
+            Vector3 trailWorldPos = grid.CellToWorld(trailPos);
+            trailWorldPos += grid.cellSize * 0.5f;
+            bool trailInFOV = IsPositionInFieldOfView(trailWorldPos);
+            if (!trailInFOV)
+            {
+                Debug.Log($"👁️ Removing discovered trail at {trailPos} - trail out of FOV");
+                return true;
+            }
+
+            return false;
+        });
+
+        // Remove investigating trails die niet meer bestaan of buiten FOV zijn
+        currentlyInvestigating.RemoveAll(trailPos =>
+        {
+            if (!blockedPositions.Contains(trailPos))
+            {
+                Debug.Log($"🧹 Removing investigating trail at {trailPos} - trail no longer exists");
+                return true;
+            }
+
+            Vector3 trailWorldPos = grid.CellToWorld(trailPos);
+            trailWorldPos += grid.cellSize * 0.5f;
+            bool trailInFOV = IsPositionInFieldOfView(trailWorldPos);
+            if (!trailInFOV)
+            {
+                Debug.Log($"👁️ Removing investigating trail at {trailPos} - trail out of FOV");
+                return true;
+            }
+
+            return false;
+        });
+    }
 
     void CreateFovVisualizer()
     {
@@ -600,17 +867,44 @@ public class EnemyAI : MonoBehaviour
 
     bool IsPlayerInFieldOfView()
     {
-        if (player == null || !useFovForDetection) return false;
+        if (player == null || !useFovForDetection)
+        {
+            if (showFOVCleanupDebug && player == null)
+                Debug.Log("🚫 Player is NULL - cannot check FOV");
+            if (showFOVCleanupDebug && !useFovForDetection)
+                Debug.Log("🚫 FOV detection is DISABLED");
+            return false;
+        }
 
         Vector3 directionToPlayer = (player.position - transform.position).normalized;
         Vector3 forward = transform.forward;
-
-        float angle = Vector3.Angle(forward, directionToPlayer);
-        if (angle > fovAngle / 2f) return false;
-
         float distance = Vector3.Distance(transform.position, player.position);
-        if (distance > fovRange) return false;
+        float angle = Vector3.Angle(forward, directionToPlayer);
 
+        if (showFOVCleanupDebug)
+        {
+            Debug.Log($"🎯 Player FOV details:");
+            Debug.Log($"   Distance: {distance:F2} (max: {fovRange:F2})");
+            Debug.Log($"   Angle: {angle:F2}° (max: {fovAngle / 2f:F2}°)");
+        }
+
+        // Check angle
+        if (angle > fovAngle / 2f)
+        {
+            if (showFOVCleanupDebug)
+                Debug.Log($"🚫 Player angle too wide: {angle:F2}° > {fovAngle / 2f:F2}°");
+            return false;
+        }
+
+        // Check distance
+        if (distance > fovRange)
+        {
+            if (showFOVCleanupDebug)
+                Debug.Log($"🚫 Player too far: {distance:F2} > {fovRange:F2}");
+            return false;
+        }
+
+        // Check line of sight
         Vector3 rayOrigin = transform.position + Vector3.up * 0.5f;
         Vector3 rayTarget = player.position + Vector3.up * 0.5f;
         Vector3 rayDirection = (rayTarget - rayOrigin).normalized;
@@ -618,11 +912,16 @@ public class EnemyAI : MonoBehaviour
 
         if (Physics.Raycast(rayOrigin, rayDirection, rayDistance, obstacleLayer))
         {
+            if (showFOVCleanupDebug)
+                Debug.Log("🚫 Player blocked by obstacle");
             return false;
         }
 
+        if (showFOVCleanupDebug)
+            Debug.Log("✅ Player IS in FOV");
         return true;
     }
+
 
     void CreateDefaultPatrol()
     {
@@ -654,12 +953,39 @@ public class EnemyAI : MonoBehaviour
             case EnemyState.MovingToTrail:
                 HandleTrailMovement();
                 break;
+
+            // NIEUWE CASE: Direct doorgaan na trail investigation
+            case EnemyState.InvestigatingTrail:
+                // Do nothing - investigation coroutine handles this
+                break;
         }
     }
 
     void HandlePatrolMovement()
     {
         if (patrolPoints.Count == 0) return;
+
+        // NIEUWE CHECK: Als we net trail investigation hebben afgerond, 
+        // vind het dichtstbijzijnde patrol point als nieuwe starting point
+        if (currentPatrolIndex >= patrolPoints.Count || Vector3Int.Distance(currentGridPosition, patrolPoints[currentPatrolIndex]) > 3)
+        {
+            // Find closest patrol point en stel in als nieuwe target
+            int closestIndex = 0;
+            float minDistance = Vector3Int.Distance(currentGridPosition, patrolPoints[0]);
+
+            for (int i = 1; i < patrolPoints.Count; i++)
+            {
+                float distance = Vector3Int.Distance(currentGridPosition, patrolPoints[i]);
+                if (distance < minDistance)
+                {
+                    minDistance = distance;
+                    closestIndex = i;
+                }
+            }
+
+            currentPatrolIndex = closestIndex;
+            Debug.Log($"🎯 Resuming patrol from closest point: index {closestIndex} at {patrolPoints[closestIndex]}");
+        }
 
         Vector3Int targetPoint = GetNextPatrolPoint();
         if (targetPoint != currentGridPosition)
@@ -1177,127 +1503,54 @@ public class EnemyAI : MonoBehaviour
         return isInvestigatingTrail;
     }
 
-    void OnDrawGizmos()
+    void DrawFovGizmos()
     {
-        if (grid == null) return;
+        Vector3 fovLeft = Quaternion.AngleAxis(-fovAngle / 2f, Vector3.up) * transform.forward * fovRange;
+        Vector3 fovRight = Quaternion.AngleAxis(fovAngle / 2f, Vector3.up) * transform.forward * fovRange;
 
-        // Patrol path
-        if (showPatrolPath && patrolPoints.Count > 1)
+        Gizmos.color = fovBorderColor;
+        Gizmos.DrawRay(transform.position, fovLeft);
+        Gizmos.DrawRay(transform.position, fovRight);
+
+        // Draw FOV arc
+        Vector3 previousPoint = transform.position + fovLeft;
+        for (int i = 1; i <= 20; i++)
         {
-            Gizmos.color = patrolPathColor;
-
-            for (int i = 0; i < patrolPoints.Count; i++)
-            {
-                Vector3 worldPos = grid.CellToWorld(patrolPoints[i]);
-                worldPos += grid.cellSize * 0.5f;
-
-                Gizmos.DrawWireCube(worldPos, Vector3.one * 0.3f);
-
-                if (patrolType == PatrolType.Loop)
-                {
-                    int nextIndex = (i + 1) % patrolPoints.Count;
-                    Vector3 nextWorldPos = grid.CellToWorld(patrolPoints[nextIndex]);
-                    nextWorldPos += grid.cellSize * 0.5f;
-                    Gizmos.DrawLine(worldPos, nextWorldPos);
-
-                    if (useBezierMovement)
-                    {
-                        DrawBezierPreview(worldPos, nextWorldPos);
-                    }
-                }
-                else if (patrolType == PatrolType.PingPong && i < patrolPoints.Count - 1)
-                {
-                    Vector3 nextWorldPos = grid.CellToWorld(patrolPoints[i + 1]);
-                    nextWorldPos += grid.cellSize * 0.5f;
-                    Gizmos.DrawLine(worldPos, nextWorldPos);
-
-                    if (useBezierMovement)
-                    {
-                        DrawBezierPreview(worldPos, nextWorldPos);
-                    }
-                }
-            }
+            float angle = Mathf.Lerp(-fovAngle / 2f, fovAngle / 2f, (float)i / 20f);
+            Vector3 fovDirection = Quaternion.AngleAxis(angle, Vector3.up) * transform.forward * fovRange;
+            Vector3 currentPoint = transform.position + fovDirection;
+            Gizmos.DrawLine(previousPoint, currentPoint);
+            previousPoint = currentPoint;
         }
 
-        // Detection range
-        if (showDetectionRange && !useFovForDetection)
+        // Fill FOV area
+        Gizmos.color = fovEditorColor;
+        Mesh fovMeshGizmo = new Mesh();
+        List<Vector3> vertices = new List<Vector3>();
+        List<int> triangles = new List<int>();
+
+        vertices.Add(Vector3.zero);
+
+        for (int i = 0; i <= 20; i++)
         {
-            Gizmos.color = detectionColor;
-            Vector3 worldPos = transform.position;
-            float worldDetectionRange = detectionRange * (grid ? grid.cellSize.x : 1f);
-            Gizmos.DrawWireSphere(worldPos, worldDetectionRange);
+            float angle = Mathf.Lerp(-fovAngle / 2f, fovAngle / 2f, (float)i / 20f);
+            Vector3 fovDirection = Quaternion.AngleAxis(angle, Vector3.up) * Vector3.forward * fovRange;
+            vertices.Add(fovDirection);
         }
 
-        // Trail detection range
-        if (showTrailDetection && investigateTrails && Application.isPlaying && trailManager != null)
+        for (int i = 1; i < vertices.Count - 1; i++)
         {
-            HashSet<Vector3Int> blockedPositions = trailManager.GetBlockedPositions();
-
-            foreach (Vector3Int trailPos in blockedPositions)
-            {
-                float distance = Vector3Int.Distance(currentGridPosition, trailPos);
-                if (distance <= trailDetectionRange)
-                {
-                    Vector3 trailWorldPos = grid.CellToWorld(trailPos);
-                    trailWorldPos += grid.cellSize * 0.5f;
-
-                    // Verschillende kleuren voor verschillende statussen
-                    if (currentlyInvestigating.Contains(trailPos))
-                    {
-                        Gizmos.color = Color.red; // Wordt onderzocht
-                        Gizmos.DrawWireCube(trailWorldPos, Vector3.one * 0.6f);
-                    }
-                    else if (discoveredTrails.Contains(trailPos))
-                    {
-                        Gizmos.color = Color.yellow; // Al ontdekt
-                        Gizmos.DrawWireCube(trailWorldPos, Vector3.one * 0.4f);
-                    }
-                    else
-                    {
-                        Gizmos.color = Color.green; // Beschikbaar
-                        Gizmos.DrawWireCube(trailWorldPos, Vector3.one * 0.3f);
-                    }
-                }
-            }
-
-            // Toon detection range
-            Gizmos.color = trailTargetColor;
-            Vector3 worldPos = transform.position;
-            float worldTrailRange = trailDetectionRange * (grid ? grid.cellSize.x : 1f);
-            Gizmos.DrawWireSphere(worldPos, worldTrailRange);
+            triangles.Add(0);
+            triangles.Add(i);
+            triangles.Add(i + 1);
         }
 
-        // Current trail target
-        if (hasTrailTarget && Application.isPlaying)
-        {
-            Gizmos.color = trailTargetColor;
-            Vector3 targetWorldPos = grid.CellToWorld(currentTrailTarget);
-            targetWorldPos += grid.cellSize * 0.5f;
-            Gizmos.DrawWireCube(targetWorldPos, Vector3.one * 0.4f);
+        fovMeshGizmo.vertices = vertices.ToArray();
+        fovMeshGizmo.triangles = triangles.ToArray();
 
-            Gizmos.DrawLine(transform.position, targetWorldPos);
-        }
-
-        // FOV in editor
-        if (showFieldOfView && showFovInEditor)
-        {
-            DrawFovGizmos();
-        }
-
-        // Current state
-        if (Application.isPlaying)
-        {
-            Vector3 textPos = transform.position + Vector3.up * 2f;
-
-#if UNITY_EDITOR
-            string stateText = $"State: {currentState}";
-            if (hasTrailTarget)
-            {
-                stateText += $"\nTrail: {currentTrailTarget}";
-            }
-            UnityEditor.Handles.Label(textPos, stateText);
-#endif
-        }
+        Gizmos.matrix = transform.localToWorldMatrix;
+        Gizmos.DrawMesh(fovMeshGizmo);
+        Gizmos.matrix = Matrix4x4.identity;
     }
 
     void DrawBezierPreview(Vector3 start, Vector3 end)
@@ -1305,66 +1558,15 @@ public class EnemyAI : MonoBehaviour
         Vector3 midPoint = (start + end) * 0.5f;
         midPoint.y += bezierHeight;
 
-        Gizmos.color = Color.cyan;
-        Vector3 prevPoint = start;
+        int segments = 10;
+        Vector3 previousPoint = start;
 
-        for (int i = 1; i <= 10; i++)
+        for (int i = 1; i <= segments; i++)
         {
-            float t = i / 10f;
+            float t = (float)i / segments;
             Vector3 currentPoint = CalculateBezierPoint(start, midPoint, end, t);
-            Gizmos.DrawLine(prevPoint, currentPoint);
-            prevPoint = currentPoint;
-        }
-
-        Gizmos.color = Color.magenta;
-        Gizmos.DrawWireSphere(midPoint, 0.1f);
-    }
-
-    void DrawFovGizmos()
-    {
-        Vector3 origin = transform.position;
-        float angle = transform.eulerAngles.y;
-
-        Gizmos.color = fovBorderColor;
-        Vector3 viewAngleA = GetVectorFromAngle(angle - fovAngle / 2);
-        Vector3 viewAngleB = GetVectorFromAngle(angle + fovAngle / 2);
-
-        Gizmos.DrawLine(origin, origin + viewAngleA * fovRange);
-        Gizmos.DrawLine(origin, origin + viewAngleB * fovRange);
-
-        if (!Application.isPlaying)
-        {
-            Vector3[] fovPoints = CalculateFovPoints();
-
-            if (fovPoints.Length > 2)
-            {
-#if UNITY_EDITOR
-                UnityEditor.Handles.color = fovEditorColor;
-
-                for (int i = 1; i < fovPoints.Length - 1; i++)
-                {
-                    Vector3[] triangle = { fovPoints[0], fovPoints[i], fovPoints[i + 1] };
-                    UnityEditor.Handles.DrawAAConvexPolygon(triangle);
-                }
-
-                UnityEditor.Handles.color = fovBorderColor;
-                for (int i = 1; i < fovPoints.Length; i++)
-                {
-                    UnityEditor.Handles.DrawLine(fovPoints[i - 1], fovPoints[i]);
-                }
-#endif
-            }
-        }
-
-        if (Application.isPlaying && isLookingAround)
-        {
-            Gizmos.color = Color.green;
-            Vector3 forward = transform.forward;
-            Vector3 leftBound = Quaternion.Euler(0, -lookAngleRange / 2f, 0) * forward;
-            Vector3 rightBound = Quaternion.Euler(0, lookAngleRange / 2f, 0) * forward;
-
-            Gizmos.DrawLine(origin, origin + leftBound * fovRange * 0.7f);
-            Gizmos.DrawLine(origin, origin + rightBound * fovRange * 0.7f);
+            Gizmos.DrawLine(previousPoint, currentPoint);
+            previousPoint = currentPoint;
         }
     }
 
@@ -1374,20 +1576,231 @@ public class EnemyAI : MonoBehaviour
         {
             DestroyImmediate(fovVisualizerObject);
         }
+
+        if (fovMaterial != null)
+        {
+            DestroyImmediate(fovMaterial);
+        }
+
+        if (fovMesh != null)
+        {
+            DestroyImmediate(fovMesh);
+        }
     }
 
     void OnValidate()
     {
-        if (Application.isPlaying && fovMaterial != null)
+        // Clamp values to reasonable ranges
+        fovAngle = Mathf.Clamp(fovAngle, 1f, 360f);
+        fovRange = Mathf.Max(fovRange, 0.1f);
+        fovResolution = Mathf.Clamp(fovResolution, 1, 50);
+        detectionRange = Mathf.Max(detectionRange, 0.1f);
+        moveSpeed = Mathf.Max(moveSpeed, 0.1f);
+        rotationSpeed = Mathf.Max(rotationSpeed, 0.1f);
+        waitTimeAtPoint = Mathf.Max(waitTimeAtPoint, 0f);
+        lookAroundDuration = Mathf.Max(lookAroundDuration, 0f);
+        trailInvestigationTime = Mathf.Max(trailInvestigationTime, 0.1f);
+        trailCleanupTime = Mathf.Max(trailCleanupTime, 0.1f);
+
+        // Clamp look directions
+        lookDirections = Mathf.Max(lookDirections, 1);
+        lookAngleRange = Mathf.Clamp(lookAngleRange, 0f, 360f);
+        timeBetweenLooks = Mathf.Max(timeBetweenLooks, 0f);
+
+        // Clamp random wait range
+        randomWaitRange.x = Mathf.Max(randomWaitRange.x, 0f);
+        randomWaitRange.y = Mathf.Max(randomWaitRange.y, randomWaitRange.x);
+
+        // Clamp bezier height
+        bezierHeight = Mathf.Max(bezierHeight, 0f);
+
+        // Update current grid position if grid is available
+        if (grid != null && Application.isPlaying)
         {
-            if (fovMaterial.HasProperty("_BaseColor"))
+            currentGridPosition = grid.WorldToCell(transform.position);
+        }
+    }
+
+    // Public interface methods
+    public void StopCurrentAction()
+    {
+        if (currentAction != null)
+        {
+            StopCoroutine(currentAction);
+            currentAction = null;
+        }
+
+        isMoving = false;
+        isWaiting = false;
+        isLookingAround = false;
+        isInvestigatingTrail = false;
+        hasTrailTarget = false;
+    }
+
+    public void ResetToPatrol()
+    {
+        StopCurrentAction();
+        currentState = EnemyState.Patrolling;
+        currentPatrolIndex = 0;
+        patrolForward = true;
+    }
+
+    public void SetPlayer(Transform newPlayer)
+    {
+        player = newPlayer;
+    }
+
+    public void SetChaseMode(bool enabled)
+    {
+        chasePlayer = enabled;
+        if (!enabled && currentState == EnemyState.Chasing)
+        {
+            currentState = EnemyState.Returning;
+        }
+    }
+
+    public void SetTrailInvestigation(bool enabled)
+    {
+        investigateTrails = enabled;
+        if (!enabled)
+        {
+            StopCurrentAction();
+            discoveredTrails.Clear();
+            currentlyInvestigating.Clear();
+            hasTrailTarget = false;
+            if (currentState == EnemyState.MovingToTrail || currentState == EnemyState.InvestigatingTrail)
             {
-                fovMaterial.SetColor("_BaseColor", fovColor);
-            }
-            else if (fovMaterial.HasProperty("_Color"))
-            {
-                fovMaterial.SetColor("_Color", fovColor);
+                currentState = EnemyState.Returning;
             }
         }
+    }
+
+    public void TeleportToPosition(Vector3Int gridPosition)
+    {
+        StopCurrentAction();
+        currentGridPosition = gridPosition;
+        SnapToGrid();
+        currentState = EnemyState.Patrolling;
+    }
+
+    public void SetFovSettings(float angle, float range)
+    {
+        fovAngle = Mathf.Clamp(angle, 1f, 360f);
+        fovRange = Mathf.Max(range, 0.1f);
+    }
+
+    public void SetMovementSettings(float speed, float rotSpeed)
+    {
+        moveSpeed = Mathf.Max(speed, 0.1f);
+        rotationSpeed = Mathf.Max(rotSpeed, 0.1f);
+    }
+
+    public void SetWaitSettings(float waitTime, bool useRandom, Vector2 randomRange)
+    {
+        waitTimeAtPoint = Mathf.Max(waitTime, 0f);
+        useRandomWaitTime = useRandom;
+        randomWaitRange = randomRange;
+        randomWaitRange.x = Mathf.Max(randomWaitRange.x, 0f);
+        randomWaitRange.y = Mathf.Max(randomWaitRange.y, randomWaitRange.x);
+    }
+
+    public void SetLookAroundSettings(bool enabled, float duration, int directions, float angleRange)
+    {
+        enableLookAround = enabled;
+        lookAroundDuration = Mathf.Max(duration, 0f);
+        lookDirections = Mathf.Max(directions, 1);
+        lookAngleRange = Mathf.Clamp(angleRange, 0f, 360f);
+    }
+
+    // Debug and info methods
+    public string GetCurrentStateInfo()
+    {
+        string info = $"State: {currentState}\n";
+        info += $"Position: {currentGridPosition}\n";
+        info += $"Moving: {isMoving}\n";
+        info += $"Waiting: {isWaiting}\n";
+        info += $"Looking Around: {isLookingAround}\n";
+        info += $"Investigating Trail: {isInvestigatingTrail}\n";
+        info += $"Has Trail Target: {hasTrailTarget}\n";
+
+        if (hasTrailTarget)
+        {
+            info += $"Trail Target: {currentTrailTarget}\n";
+        }
+
+        info += $"Discovered Trails: {discoveredTrails.Count}\n";
+        info += $"Currently Investigating: {currentlyInvestigating.Count}\n";
+        info += $"Patrol Index: {currentPatrolIndex}/{patrolPoints.Count}\n";
+
+        return info;
+    }
+
+    public List<Vector3Int> GetDiscoveredTrails()
+    {
+        return new List<Vector3Int>(discoveredTrails);
+    }
+
+    public List<Vector3Int> GetCurrentlyInvestigatingTrails()
+    {
+        return new List<Vector3Int>(currentlyInvestigating);
+    }
+
+    public Vector3Int GetCurrentTrailTarget()
+    {
+        return hasTrailTarget ? currentTrailTarget : Vector3Int.zero;
+    }
+
+    public bool HasValidTrailManager()
+    {
+        return trailManager != null;
+    }
+
+    public int GetTrailCount()
+    {
+        return trailManager != null ? trailManager.GetBlockedPositions().Count : 0;
+    }
+
+    // FOV Settings Methods
+    public void SetRequireTrailInFOV(bool required)
+    {
+        requireTrailInFOV = required;
+        Debug.Log($"Require Trail in FOV set to: {required}");
+    }
+
+    public void SetRequirePlayerInFOV(bool required)
+    {
+        requirePlayerInFOV = required;
+        Debug.Log($"Require Player in FOV set to: {required}");
+    }
+
+    public void SetFOVCleanupDebug(bool enabled)
+    {
+        showFOVCleanupDebug = enabled;
+    }
+
+    public bool GetRequireTrailInFOV()
+    {
+        return requireTrailInFOV;
+    }
+
+    public bool GetRequirePlayerInFOV()
+    {
+        return requirePlayerInFOV;
+    }
+
+    // Performance monitoring
+    public float GetLastTrailCheckTime()
+    {
+        return lastTrailCheckTime;
+    }
+
+    public float GetTrailCheckInterval()
+    {
+        return trailCheckInterval;
+    }
+
+    public void SetTrailCheckInterval(float interval)
+    {
+        trailCheckInterval = Mathf.Max(interval, 0.1f);
     }
 }
