@@ -274,6 +274,49 @@ public class PlayerTrailManager : MonoBehaviour
         return temporaryTrailTilesRemaining;
     }
 
+    public bool RemoveTrailAt(Vector3Int gridPosition)
+    {
+        if (!trailPositions.Contains(gridPosition))
+        {
+            Debug.Log($"No trail found at position {gridPosition} to remove");
+            return false;
+        }
+
+        // Remove from position set
+        trailPositions.Remove(gridPosition);
+
+        // Find and remove from active trails queue
+        Queue<TrailDecal> tempQueue = new Queue<TrailDecal>();
+        bool trailFound = false;
+
+        while (activeTrails.Count > 0)
+        {
+            TrailDecal trail = activeTrails.Dequeue();
+
+            if (trail.gridPosition == gridPosition)
+            {
+                // Destroy the trail object
+                if (trail.decalObject != null)
+                {
+                    Destroy(trail.decalObject);
+                }
+                trailFound = true;
+                Debug.Log($"🧹 Trail removed at {gridPosition}");
+            }
+            else
+            {
+                // Keep other trails
+                tempQueue.Enqueue(trail);
+            }
+        }
+
+        // Restore the queue without the removed trail
+        activeTrails = tempQueue;
+
+        return trailFound;
+    }
+
+
     // Movement blocking API
     public bool IsPositionBlocked(Vector3Int gridPosition)
     {
@@ -379,4 +422,24 @@ public class PlayerTrailManager : MonoBehaviour
             Gizmos.DrawWireCube(startWorldPos, gridReference.cellSize * 0.8f);
         }
     }
+
+    public void RefreshBlockedPositions()
+    {
+        // Force refresh van blocked positions door alle trails opnieuw te scannen
+        HashSet<Vector3Int> newBlockedPositions = new HashSet<Vector3Int>();
+
+        // Scan alle bestaande trail objecten in de scene
+        GameObject[] trailObjects = GameObject.FindGameObjectsWithTag("Trail");
+        foreach (GameObject obj in trailObjects)
+        {
+            Vector3Int gridPos = gridReference.WorldToCell(obj.transform.position);
+            newBlockedPositions.Add(gridPos);
+        }
+
+        // Update de interne blocked positions
+        trailPositions = newBlockedPositions;
+
+        Debug.Log($"Refreshed blocked positions. Found {newBlockedPositions.Count} trails.");
+    }
+
 }
