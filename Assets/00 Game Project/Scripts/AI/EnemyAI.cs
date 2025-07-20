@@ -24,6 +24,9 @@ namespace GameProjectFM.AI.Core
         [Header("Detection")]
         [SerializeField] private DetectionSettings detectionSettings = new DetectionSettings();
 
+        [Header("Chase Settings")]
+        [SerializeField] private ChaseSettings chaseSettings = new ChaseSettings();
+
         [Header("Trail Investigation")]
         [SerializeField] private TrailSettings trailSettings = new TrailSettings();
 
@@ -83,12 +86,14 @@ namespace GameProjectFM.AI.Core
             if (lookAroundSettings == null) lookAroundSettings = new LookAroundSettings();
             if (fovSettings == null) fovSettings = new FOVSettings();
             if (detectionSettings == null) detectionSettings = new DetectionSettings();
+            if (chaseSettings == null) chaseSettings = new ChaseSettings();
             if (trailSettings == null) trailSettings = new TrailSettings();
             if (fovCleanupSettings == null) fovCleanupSettings = new FOVCleanupSettings();
             if (visualSettings == null) visualSettings = new VisualSettings();
-            
-            Debug.Log("✅ EnemyAI: All settings initialized");
+
+            Debug.Log("✅ EnemyAI: All settings initialized (including chase settings)");
         }
+
 
         void Start()
         {
@@ -130,27 +135,39 @@ namespace GameProjectFM.AI.Core
 
         private void InitializeBehaviors()
         {
-            // Create or get patrol behavior
+            // Initialize Patrol Behavior
             patrolBehavior = GetComponent<PatrolBehavior>();
             if (patrolBehavior == null)
             {
                 patrolBehavior = gameObject.AddComponent<PatrolBehavior>();
             }
+            patrolBehavior.Initialize(patrolSettings, lookAroundSettings, movementSystem);
 
-            // Create or get chase behavior
+            // Initialize Chase Behavior
             chaseBehavior = GetComponent<ChaseBehavior>();
             if (chaseBehavior == null)
             {
                 chaseBehavior = gameObject.AddComponent<ChaseBehavior>();
             }
+            chaseBehavior.Initialize(movementSystem, detectionSystem, chaseSettings);
 
-            // Create or get trail investigation behavior
+            // Initialize Trail Investigation Behavior
+            // Initialize Trail Investigation Behavior
             trailBehavior = GetComponent<TrailInvestigationBehavior>();
             if (trailBehavior == null)
             {
                 trailBehavior = gameObject.AddComponent<TrailInvestigationBehavior>();
             }
+
+            // Find Grid and get player transform
+            Grid gameGrid = FindFirstObjectByType<Grid>();
+            Transform playerTransform = detectionSettings.player;
+
+            trailBehavior.Initialize(trailSettings, fovCleanupSettings, movementSystem, fovSystem, trailManager, gameGrid, playerTransform);
+
+            Debug.Log("✅ EnemyAI: All behaviors initialized (including enhanced chase)");
         }
+
 
         private void InitializeVisualComponents()
         {
@@ -164,14 +181,40 @@ namespace GameProjectFM.AI.Core
 
         private void InitializeAllSystems()
         {
-            // Initialize all systems with their settings
+            // Initialize Movement System
+            movementSystem = GetComponent<MovementSystem>();
+            if (movementSystem == null)
+            {
+                movementSystem = gameObject.AddComponent<MovementSystem>();
+            }
             movementSystem.Initialize(gridMovementSettings);
+
+            // Initialize FOV System first (needed for detection)
+            fovSystem = GetComponent<FOVSystem>();
+            if (fovSystem == null)
+            {
+                fovSystem = gameObject.AddComponent<FOVSystem>();
+            }
+            // Pass both fovSettings AND the player transform
             fovSystem.Initialize(fovSettings, detectionSettings.player);
-            detectionSystem.Initialize(detectionSettings, fovSystem);
+
+            // Initialize Detection System (depends on FOV)
+            detectionSystem = GetComponent<DetectionSystem>();
+            if (detectionSystem == null)
+            {
+                detectionSystem = gameObject.AddComponent<DetectionSystem>();
+            }
+            detectionSystem.Initialize(detectionSettings, fovSettings, fovSystem);
 
             // Initialize behaviors
             patrolBehavior.Initialize(patrolSettings, lookAroundSettings, movementSystem);
-            chaseBehavior.Initialize(movementSystem, detectionSystem);
+            // Initialize Chase Behavior
+            chaseBehavior = GetComponent<ChaseBehavior>();
+            if (chaseBehavior == null)
+            {
+                chaseBehavior = gameObject.AddComponent<ChaseBehavior>();
+            }
+            chaseBehavior.Initialize(movementSystem, detectionSystem, chaseSettings);
             trailBehavior.Initialize(trailSettings, fovCleanupSettings, movementSystem, fovSystem, trailManager, gridMovementSettings.grid, detectionSettings.player);
 
             // Initialize visual components (optional)
@@ -180,7 +223,7 @@ namespace GameProjectFM.AI.Core
                 fovVisualizer.Initialize(visualSettings, fovSystem);
             }
 
-            Debug.Log("🤖 EnemyAI: All systems initialized successfully");
+            Debug.Log("✅ EnemyAI: All systems initialized (FOV-based detection)");
         }
 
         private void ConnectEventHandlers()
@@ -202,6 +245,13 @@ namespace GameProjectFM.AI.Core
             patrolBehavior.OnPatrolPointReached += HandlePatrolPointReached;
             patrolBehavior.OnPatrolCompleted += HandlePatrolCompleted;
 
+            // Detection System Events
+            if (detectionSystem != null)
+            {
+                detectionSystem.OnPlayerDetected += HandlePlayerDetected;
+                detectionSystem.OnPlayerLost += HandlePlayerLost;
+            }
+
             // Trail events
             trailBehavior.OnTrailDetected += HandleTrailDetected;
             trailBehavior.OnTrailInvestigationStarted += HandleTrailInvestigationStarted;
@@ -218,6 +268,12 @@ namespace GameProjectFM.AI.Core
 
         private void HandleAIUpdates()
         {
+            // Always check for trails first (except when investigating)
+            if (currentState != EnemyState.InvestigatingTrail && trailSettings.investigateTrails)
+            {
+                trailBehavior.CheckForTrails();
+            }
+
             // Update behaviors based on current state
             switch (currentState)
             {
@@ -226,6 +282,13 @@ namespace GameProjectFM.AI.Core
                     break;
 
                 case EnemyState.Chasing:
+                    // Check if we should interrupt chase for trails
+                    if (HasTrailsInFOV())
+                    {
+                        Debug.Log("🚫 Interrupting chase - trails detected in FOV");
+                        chaseBehavior.ForceEndChase();
+                        return;
+                    }
                     UpdateChasing();
                     break;
 
@@ -240,12 +303,6 @@ namespace GameProjectFM.AI.Core
                 case EnemyState.Returning:
                     UpdateReturning();
                     break;
-            }
-
-            // Always check for trails when not chasing
-            if (currentState != EnemyState.Chasing && trailSettings.investigateTrails)
-            {
-                trailBehavior.CheckForTrails();
             }
         }
 
@@ -284,13 +341,29 @@ namespace GameProjectFM.AI.Core
                     else
                     {
                         Debug.LogWarning($"No valid direction to trail target {trailBehavior.CurrentTrailTarget}");
-                        ChangeState(EnemyState.Returning);
+                        // Check for other trails before giving up
+                        if (trailBehavior.HasMoreTrailsToInvestigate())
+                        {
+                            trailBehavior.MoveToNextTrail();
+                        }
+                        else
+                        {
+                            ChangeState(EnemyState.Returning);
+                        }
                     }
                 }
             }
             else
             {
-                ChangeState(EnemyState.Returning);
+                // No current target, check for new trails
+                if (trailBehavior.HasMoreTrailsToInvestigate())
+                {
+                    trailBehavior.MoveToNextTrail();
+                }
+                else
+                {
+                    ChangeState(EnemyState.Returning);
+                }
             }
         }
 
@@ -329,28 +402,40 @@ namespace GameProjectFM.AI.Core
 
         private void HandleStateTransitions()
         {
-            // Priority-based state transitions
-
-            // Highest priority: Chasing
-            if (detectionSettings.chasePlayer && detectionSystem.PlayerDetected && currentState != EnemyState.Chasing)
-            {
-                ChangeState(EnemyState.Chasing);
-                return;
-            }
-
-            // Second priority: Trail investigation
+            // PRIORITY 1: Trail investigation (highest priority when player detected)
             if (trailBehavior.HasTrailTarget && currentState == EnemyState.Patrolling)
             {
                 ChangeState(EnemyState.MovingToTrail);
                 return;
             }
 
-            // Default: Return to patrolling if no other activities
+            // PRIORITY 2: Chase player (only if no trails in FOV and chase enabled)
+            if (detectionSettings.chasePlayer && detectionSystem.PlayerDetected)
+            {
+                if (!HasTrailsInFOV() && currentState != EnemyState.Chasing)
+                {
+                    ChangeState(EnemyState.Chasing);
+                    return;
+                }
+                else if (HasTrailsInFOV() && (currentState == EnemyState.Chasing || currentState == EnemyState.Patrolling))
+                {
+                    Debug.Log("🔄 Stopping chase - trails detected in FOV");
+                    // Force end chase and let trail investigation take priority
+                    if (chaseBehavior.IsChasing)
+                    {
+                        chaseBehavior.ForceEndChase();
+                    }
+                    return;
+                }
+            }
+
+            // PRIORITY 3: Return to patrolling if no other activities
             if (currentState == EnemyState.Chasing && !chaseBehavior.IsChasing)
             {
                 ChangeState(EnemyState.Returning);
             }
         }
+
 
         private void ChangeState(EnemyState newState)
         {
@@ -430,7 +515,26 @@ namespace GameProjectFM.AI.Core
         private void HandlePlayerDetected(Transform player)
         {
             Debug.Log("👁️ Player detected by AI!");
+
+            // Trigger alert state in trail behavior
+            if (trailBehavior != null)
+            {
+                trailBehavior.TriggerAlertState();
+            }
+
+            // PRIORITY CHECK: Only chase if NO trails are visible in FOV
+            if (detectionSettings.chasePlayer && !HasTrailsInFOV())
+            {
+                Debug.Log("🏃 No trails in FOV - starting chase");
+                ChangeState(EnemyState.Chasing);
+            }
+            else if (HasTrailsInFOV())
+            {
+                Debug.Log("🕵️ Trails detected in FOV - prioritizing trail cleanup over chase");
+                // Trail behavior will automatically start investigating trails in alert state
+            }
         }
+
 
         private void HandlePlayerLost()
         {
@@ -480,14 +584,48 @@ namespace GameProjectFM.AI.Core
 
         private void HandleTrailInvestigationCompleted()
         {
-            Debug.Log("✅ Trail investigation completed, resuming patrol");
-            ChangeState(EnemyState.Patrolling);
+            Debug.Log("✅ Trail investigation completed");
+
+            // Check if there are more trails to investigate before returning to patrol
+            if (trailBehavior.HasMoreTrailsToInvestigate())
+            {
+                Debug.Log("🔍 More trails detected, moving to next trail");
+                ChangeState(EnemyState.MovingToTrail);
+            }
+            else
+            {
+                Debug.Log("🚶 No more trails, resuming patrol");
+                ChangeState(EnemyState.Patrolling);
+            }
         }
 
         private void HandlePlayerFOVChanged(bool playerInFOV)
         {
             Debug.Log($"👁️ Player FOV status changed: {(playerInFOV ? "IN" : "OUT OF")} FOV");
         }
+
+        private bool HasTrailsInFOV()
+        {
+            if (trailBehavior == null || trailManager == null) return false;
+
+            var blockedPositions = trailManager.GetBlockedPositions();
+            if (blockedPositions.Count == 0) return false;
+
+            // Check if any trail is in FOV
+            foreach (Vector3Int trailPos in blockedPositions)
+            {
+                Vector3 trailWorldPos = gridMovementSettings.grid.CellToWorld(trailPos);
+                trailWorldPos += gridMovementSettings.grid.cellSize * 0.5f;
+
+                if (fovSystem.IsPositionInFieldOfView(trailWorldPos))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
 
         #endregion
 
@@ -544,6 +682,22 @@ namespace GameProjectFM.AI.Core
                 if (gridMovementSettings.rotationSpeed < 0.1f) gridMovementSettings.rotationSpeed = 0.1f;
             }
 
+            // Validate detection settings
+            if (detectionSettings != null && detectionSettings.player == null)
+            {
+                // Try to find player automatically
+                GameObject playerObj = GameObject.FindGameObjectWithTag("Player");
+                if (playerObj != null)
+                {
+                    detectionSettings.player = playerObj.transform;
+                    Debug.Log("🎯 Player automatically assigned to EnemyAI detection settings");
+                }
+                else
+                {
+                    Debug.LogWarning("⚠️ No Player found! Assign Player to Detection Settings manually.");
+                }
+            }
+
             // Set default visual colors if not set
             if (visualSettings != null)
             {
@@ -563,6 +717,7 @@ namespace GameProjectFM.AI.Core
                 patrolSettings.RefreshPatrolPoints();
             }
         }
+
 
         #endregion
 

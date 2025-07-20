@@ -93,7 +93,13 @@ namespace GameProjectFM.AI.Core
         public Transform player;
         public LayerMask playerLayer = -1;
         public bool chasePlayer = false;
-        public float detectionRange = 5f;
+
+        [Header("Detection Behavior")]
+        [Tooltip("Player must be in FOV to be detected")]
+        public bool requireFOVForDetection = true;
+
+        [Tooltip("Additional checks for detection")]
+        public bool requireLineOfSight = true;
     }
 
     [System.Serializable]
@@ -116,6 +122,19 @@ namespace GameProjectFM.AI.Core
         public bool requirePlayerInFOV = false;
         public bool showFOVCleanupDebug = true;
         public Color fovCleanupColor = Color.cyan;
+
+        [Header("Alert State System")]
+        [Tooltip("Once player is detected, AI enters alert state and cleans ALL trails in FOV")]
+        public bool useAlertState = true;
+
+        [Tooltip("How long the alert state lasts after last player detection")]
+        public float alertStateDuration = 30f;
+
+        [Tooltip("In alert state, automatically detect and clean all trails in FOV")]
+        public bool alertStateAutoCleanFOVTrails = true;
+
+        [Tooltip("Show debug messages for alert state")]
+        public bool showAlertStateDebug = true;
     }
 
     [System.Serializable]
@@ -123,14 +142,43 @@ namespace GameProjectFM.AI.Core
     {
         [Header("Visual Feedback")]
         public bool showPatrolPath = true;
-        public bool showDetectionRange = false;
         public bool showFieldOfView = true;
         public bool showFovInEditor = true;
         public bool showTrailDetection = true;
+        public bool showPlayerDetection = true;
+
+        [Header("Colors")]
         public Color patrolPathColor = Color.yellow;
-        public Color detectionColor = Color.red;
         public Color fovColor = new Color(1f, 0f, 0f, 0.3f);
         public Color fovBorderColor = Color.red;
         public Color fovEditorColor = new Color(1f, 0f, 0f, 0.1f);
+        public Color playerDetectedColor = Color.green;
+        public Color playerInFOVColor = Color.yellow;
     }
+
+    [System.Serializable]
+    public class ChaseSettings
+    {
+        [Header("Chase Behavior")]
+        [Tooltip("Maximum time to chase the player (in seconds)")]
+        public float maxChaseTime = 15f;
+
+        [Tooltip("Time to continue chasing after player leaves FOV (in seconds)")]
+        public float persistentChaseTime = 8f;
+
+        [Tooltip("Time to search at last known position")]
+        public float searchTime = 3f;
+
+        [Header("Capture Settings")]
+        [Tooltip("Distance within which player is considered caught")]
+        public float captureDistance = 1.2f;
+
+        [Tooltip("Show debug messages for chase behavior")]
+        public bool showChaseDebug = true;
+
+        [Header("Chase Visual")]
+        public Color chasePathColor = Color.red;
+        public Color lastKnownPositionColor = Color.orange;
+    }
+
 }

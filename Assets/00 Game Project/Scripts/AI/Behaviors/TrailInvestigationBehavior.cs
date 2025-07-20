@@ -36,9 +36,19 @@ namespace GameProjectFM.AI.Behaviors
         public System.Action<Vector3Int> OnTrailCleaned;
         public System.Action OnTrailInvestigationCompleted;
 
+        // Alert State System
+        // Alert State System
+        private bool isInAlertState = false;
+        private float alertStateEndTime = 0f;
+        private List<Vector3Int> alertStateDetectedTrails = new List<Vector3Int>();
+
+        // Public Properties
         public bool HasTrailTarget => hasTrailTarget;
         public bool IsInvestigating => isInvestigatingTrail;
         public Vector3Int CurrentTrailTarget => currentTrailTarget;
+        public bool IsInAlertState => isInAlertState && Time.time < alertStateEndTime;  // ← DEZE PROPERTY ONTBRAK!
+        public bool IsBusy => IsInvestigating || HasTrailTarget;
+
 
         public void Initialize(TrailSettings trail, FOVCleanupSettings fovCleanup, MovementSystem movement, FOVSystem fov, PlayerTrailManager trails, Grid gameGrid, Transform playerTransform)
         {
@@ -51,16 +61,116 @@ namespace GameProjectFM.AI.Behaviors
             player = playerTransform;
         }
 
+        public void TriggerAlertState()
+        {
+            if (!fovCleanupSettings.useAlertState) return;
+
+            isInAlertState = true;
+            alertStateEndTime = Time.time + fovCleanupSettings.alertStateDuration;
+
+            if (fovCleanupSettings.showAlertStateDebug)
+            {
+                Debug.Log($"🚨 ALERT STATE TRIGGERED! Duration: {fovCleanupSettings.alertStateDuration}s");
+            }
+
+            // Immediately scan for ALL trails in FOV
+            if (fovCleanupSettings.alertStateAutoCleanFOVTrails)
+            {
+                DetectAllTrailsInFOV();
+            }
+        }
+
+        private void DetectAllTrailsInFOV()
+        {
+            HashSet<Vector3Int> allTrails = trailManager.GetBlockedPositions();
+            List<Vector3Int> trailsInFOV = new List<Vector3Int>();
+
+            foreach (Vector3Int trailPos in allTrails)
+            {
+                Vector3 trailWorldPos = grid.CellToWorld(trailPos);
+                trailWorldPos += grid.cellSize * 0.5f;
+
+                if (fovSystem.IsPositionInFieldOfView(trailWorldPos))
+                {
+                    trailsInFOV.Add(trailPos);
+
+                    // Add to discovered trails if not already there
+                    if (!discoveredTrails.Contains(trailPos))
+                    {
+                        discoveredTrails.Add(trailPos);
+                    }
+
+                    // Track alert state detected trails
+                    if (!alertStateDetectedTrails.Contains(trailPos))
+                    {
+                        alertStateDetectedTrails.Add(trailPos);
+                    }
+                }
+            }
+
+            if (fovCleanupSettings.showAlertStateDebug)
+            {
+                Debug.Log($"🔍 Alert State: Detected {trailsInFOV.Count} trails in FOV to clean");
+                foreach (Vector3Int trail in trailsInFOV)
+                {
+                    Debug.Log($"   - Trail at {trail}");
+                }
+            }
+        }
+
+        public void CheckAlertState()
+        {
+            if (!fovCleanupSettings.useAlertState) return;
+
+            // Check if alert state has expired
+            if (isInAlertState && Time.time >= alertStateEndTime)
+            {
+                EndAlertState();
+            }
+
+            // In alert state, continuously detect trails in FOV
+            if (IsInAlertState && fovCleanupSettings.alertStateAutoCleanFOVTrails)
+            {
+                DetectAllTrailsInFOV();
+            }
+        }
+
+        private void EndAlertState()
+        {
+            if (fovCleanupSettings.showAlertStateDebug)
+            {
+                Debug.Log($"⏰ Alert State ENDED after {fovCleanupSettings.alertStateDuration}s");
+            }
+
+            isInAlertState = false;
+            alertStateDetectedTrails.Clear();
+        }
         public void CheckForTrails()
         {
             if (!trailSettings.investigateTrails) return;
+
+            // First check alert state
+            CheckAlertState();
 
             ValidateTrailTargets();
 
             HashSet<Vector3Int> blockedPositions = trailManager.GetBlockedPositions();
             if (blockedPositions.Count == 0) return;
 
-            // FOV requirement check before trail detection
+            // ALERT STATE LOGIC: If in alert state, bypass normal FOV requirements
+            if (IsInAlertState)
+            {
+                if (fovCleanupSettings.showAlertStateDebug)
+                {
+                    Debug.Log("🚨 In Alert State - detecting ALL trails in FOV regardless of player position");
+                }
+
+                // In alert state, process all trails that are in FOV
+                ProcessAlertStateTrails(blockedPositions);
+                return;
+            }
+
+            // NORMAL STATE LOGIC: Standard FOV requirement checks
             if (fovCleanupSettings.requirePlayerInFOV && !fovCleanupSettings.requireTrailInFOV)
             {
                 bool playerInFOV = fovSystem.IsPositionInFieldOfView(player.position);
@@ -78,7 +188,57 @@ namespace GameProjectFM.AI.Behaviors
                 }
             }
 
-            // Filter trails on FOV
+            // Process trails normally
+            ProcessNormalStateTrails(blockedPositions);
+        }
+
+        private void ProcessAlertStateTrails(HashSet<Vector3Int> blockedPositions)
+        {
+            List<TrailInfo> availableTrails = new List<TrailInfo>();
+
+            foreach (Vector3Int trailPos in blockedPositions)
+            {
+                Vector3 trailWorldPos = grid.CellToWorld(trailPos);
+                trailWorldPos += grid.cellSize * 0.5f;
+
+                // In alert state, only check if trail is in FOV
+                bool trailInFOV = fovSystem.IsPositionInFieldOfView(trailWorldPos);
+                if (!trailInFOV) continue;
+
+                float distance = Vector3Int.Distance(movementSystem.CurrentGridPosition, trailPos);
+
+                if (!currentlyInvestigating.Contains(trailPos))
+                {
+                    availableTrails.Add(new TrailInfo { position = trailPos, distance = distance });
+
+                    // Add to discovered trails
+                    if (!discoveredTrails.Contains(trailPos))
+                    {
+                        discoveredTrails.Add(trailPos);
+                    }
+                }
+            }
+
+            if (availableTrails.Count > 0)
+            {
+                // Always prioritize closest first in alert state
+                availableTrails.Sort((a, b) => a.distance.CompareTo(b.distance));
+
+                Vector3Int targetTrail = availableTrails[0].position;
+
+                if (fovCleanupSettings.showAlertStateDebug)
+                {
+                    Debug.Log($"🚨 Alert State: Targeting trail at {targetTrail} (found {availableTrails.Count} trails in FOV)");
+                }
+
+                StartTrailInvestigation(targetTrail);
+                OnTrailDetected?.Invoke(targetTrail);
+            }
+        }
+
+        private void ProcessNormalStateTrails(HashSet<Vector3Int> blockedPositions)
+        {
+            // This is the existing logic from the original CheckForTrails method
             List<TrailInfo> availableTrails = new List<TrailInfo>();
 
             foreach (Vector3Int trailPos in blockedPositions)
@@ -206,6 +366,25 @@ namespace GameProjectFM.AI.Behaviors
 
         private bool IsCleanupAllowedByFOV()
         {
+            // In alert state, cleanup is ALWAYS allowed for trails in FOV
+            if (IsInAlertState)
+            {
+                bool trailInFOV = IsTrailInFieldOfView();
+                if (fovCleanupSettings.showAlertStateDebug)
+                {
+                    Debug.Log($"🚨 Alert State: Cleanup allowed = {trailInFOV} (only checking trail in FOV)");
+                }
+                return trailInFOV;
+            }
+
+            // Normal state logic (existing code)
+            if (!fovCleanupSettings.requireTrailInFOV && !fovCleanupSettings.requirePlayerInFOV)
+            {
+                if (fovCleanupSettings.showFOVCleanupDebug)
+                    Debug.Log("🟢 No FOV requirements - cleanup always allowed");
+                return true;
+            }
+
             if (!fovCleanupSettings.requireTrailInFOV && !fovCleanupSettings.requirePlayerInFOV)
             {
                 if (fovCleanupSettings.showFOVCleanupDebug)
@@ -317,5 +496,109 @@ namespace GameProjectFM.AI.Behaviors
 
             return Vector3Int.zero;
         }
+
+        public bool HasMoreTrailsToInvestigate()
+        {
+            // Validate current trails first
+            ValidateTrailTargets();
+
+            // Check if there are any discovered trails that haven't been investigated yet
+            HashSet<Vector3Int> currentTrails = trailManager.GetBlockedPositions();
+
+            foreach (Vector3Int trail in currentTrails)
+            {
+                bool alreadyDiscovered = discoveredTrails.Contains(trail);
+                bool currentlyInvestigating = this.currentlyInvestigating.Contains(trail);
+                bool isCurrentTarget = hasTrailTarget && trail == currentTrailTarget;
+
+                // If it's a new trail or a discovered but not yet investigated trail
+                if (!alreadyDiscovered || (!currentlyInvestigating && !isCurrentTarget))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        public void MoveToNextTrail()
+        {
+            // Clear current target
+            if (hasTrailTarget)
+            {
+                currentlyInvestigating.Remove(currentTrailTarget);
+            }
+
+            // Find the next available trail
+            Vector3Int nextTrail = FindNextTrailToInvestigate();
+
+            if (nextTrail != Vector3Int.zero)
+            {
+                SetTrailTarget(nextTrail);
+                Debug.Log($"🎯 Moving to next trail: {nextTrail}");
+            }
+            else
+            {
+                CleanupTrailInvestigation();
+                Debug.Log("🚫 No more trails to investigate");
+            }
+        }
+
+        private Vector3Int FindNextTrailToInvestigate()
+        {
+            HashSet<Vector3Int> currentTrails = trailManager.GetBlockedPositions();
+            Vector3Int currentPosition = movementSystem.CurrentGridPosition;
+            Vector3Int closestTrail = Vector3Int.zero;
+            float closestDistance = float.MaxValue;
+
+            foreach (Vector3Int trail in currentTrails)
+            {
+                bool alreadyInvestigating = currentlyInvestigating.Contains(trail);
+                bool isCurrentTarget = hasTrailTarget && trail == currentTrailTarget;
+
+                // Skip trails that are already being investigated or are the current target
+                if (alreadyInvestigating || isCurrentTarget) continue;
+
+                // Calculate distance to this trail
+                float distance = Vector3Int.Distance(currentPosition, trail);
+
+                // Update closest trail
+                if (distance < closestDistance)
+                {
+                    closestDistance = distance;
+                    closestTrail = trail;
+                }
+            }
+
+            return closestTrail;
+        }
+
+        public void SetTrailTarget(Vector3Int trailPosition)
+        {
+            // Clear previous target
+            if (hasTrailTarget)
+            {
+                currentlyInvestigating.Remove(currentTrailTarget);
+            }
+
+            // Set new target
+            currentTrailTarget = trailPosition;
+            hasTrailTarget = true;
+
+            // Add to discovered and investigating lists
+            if (!discoveredTrails.Contains(trailPosition))
+            {
+                discoveredTrails.Add(trailPosition);
+            }
+
+            if (!currentlyInvestigating.Contains(trailPosition))
+            {
+                currentlyInvestigating.Add(trailPosition);
+            }
+
+            OnTrailDetected?.Invoke(trailPosition);
+            Debug.Log($"🎯 New trail target set: {trailPosition}");
+        }
+
     }
 }
