@@ -1179,7 +1179,7 @@ MonoBehaviour:
     timeBetweenLooks: 0.5
   fovSettings:
     fovAngle: 120
-    fovRange: 4
+    fovRange: 6
     fovResolution: 20
     useFovForDetection: 1
     obstacleLayer:
@@ -1193,10 +1193,18 @@ MonoBehaviour:
     chasePlayer: 0
     requireFOVForDetection: 1
     requireLineOfSight: 1
+  chaseSettings:
+    maxChaseTime: 12
+    persistentChaseTime: 5
+    searchTime: 3
+    captureDistance: 1.5
+    showChaseDebug: 1
+    chasePathColor: {r: 1, g: 0, b: 0, a: 1}
+    lastKnownPositionColor: {r: 1, g: 0.6470588, b: 0, a: 1}
   trailSettings:
     investigateTrails: 1
-    trailCleanupTime: 3
-    trailInvestigationTime: 2
+    trailCleanupTime: 2
+    trailInvestigationTime: 1
     prioritizeNewestTrails: 0
     alwaysClosestFirst: 1
     trailTargetColor: {r: 1, g: 0.6470588, b: 0, a: 1}

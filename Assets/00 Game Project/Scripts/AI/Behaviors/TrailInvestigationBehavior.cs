@@ -126,14 +126,20 @@ namespace GameProjectFM.AI.Behaviors
             if (isInAlertState && Time.time >= alertStateEndTime)
             {
                 EndAlertState();
+                return;
             }
 
-            // In alert state, continuously detect trails in FOV
+            // In alert state, detect trails but prevent infinite loop
             if (IsInAlertState && fovCleanupSettings.alertStateAutoCleanFOVTrails)
             {
-                DetectAllTrailsInFOV();
+                // Only detect trails every few frames to prevent spam
+                if (Time.frameCount % 30 == 0) // Check every 30 frames (~0.5 seconds)
+                {
+                    DetectAllTrailsInFOV();
+                }
             }
         }
+
 
         private void EndAlertState()
         {
@@ -194,6 +200,16 @@ namespace GameProjectFM.AI.Behaviors
 
         private void ProcessAlertStateTrails(HashSet<Vector3Int> blockedPositions)
         {
+            // Prevent processing if already investigating or moving to a trail
+            if (hasTrailTarget || isInvestigatingTrail)
+            {
+                if (fovCleanupSettings.showAlertStateDebug)
+                {
+                    Debug.Log("🚨 Alert State: Already busy with trail, skipping detection");
+                }
+                return;
+            }
+
             List<TrailInfo> availableTrails = new List<TrailInfo>();
 
             foreach (Vector3Int trailPos in blockedPositions)
@@ -207,6 +223,7 @@ namespace GameProjectFM.AI.Behaviors
 
                 float distance = Vector3Int.Distance(movementSystem.CurrentGridPosition, trailPos);
 
+                // Only add trails that are not currently being investigated
                 if (!currentlyInvestigating.Contains(trailPos))
                 {
                     availableTrails.Add(new TrailInfo { position = trailPos, distance = distance });
@@ -234,7 +251,30 @@ namespace GameProjectFM.AI.Behaviors
                 StartTrailInvestigation(targetTrail);
                 OnTrailDetected?.Invoke(targetTrail);
             }
+            else if (fovCleanupSettings.showAlertStateDebug)
+            {
+                Debug.Log("🚨 Alert State: No available trails in FOV or all are being investigated");
+            }
         }
+
+        public void ForceEndAlertState()
+        {
+            if (fovCleanupSettings.showAlertStateDebug)
+            {
+                Debug.Log("🚨 Force ending alert state");
+            }
+
+            isInAlertState = false;
+            alertStateEndTime = 0f;
+            alertStateDetectedTrails.Clear();
+
+            // Stop any current trail investigation if stuck
+            if (isInvestigatingTrail)
+            {
+                StopInvestigation();
+            }
+        }
+
 
         private void ProcessNormalStateTrails(HashSet<Vector3Int> blockedPositions)
         {
@@ -336,14 +376,37 @@ namespace GameProjectFM.AI.Behaviors
 
             yield return new WaitForSeconds(trailSettings.trailInvestigationTime);
 
-            if (IsCleanupAllowedByFOV())
+            // In alert state, ALWAYS allow cleanup if trail is in FOV
+            bool shouldCleanup = false;
+
+            if (IsInAlertState)
             {
-                Debug.Log($"🧹 FOV requirements met. Starting cleanup of trail at {currentTrailTarget}");
+                shouldCleanup = IsTrailInFieldOfView();
+                if (fovCleanupSettings.showAlertStateDebug)
+                {
+                    Debug.Log($"🚨 Alert State: Trail cleanup = {shouldCleanup} (trail in FOV check only)");
+                }
+            }
+            else
+            {
+                shouldCleanup = IsCleanupAllowedByFOV();
+            }
+
+            if (shouldCleanup)
+            {
+                Debug.Log($"🧹 Requirements met. Starting cleanup of trail at {currentTrailTarget}");
                 yield return StartCoroutine(CleanupTrailSequence());
             }
             else
             {
-                Debug.Log($"🚫 FOV requirements not met. Skipping cleanup of trail at {currentTrailTarget}");
+                if (IsInAlertState)
+                {
+                    Debug.Log($"🚫 Alert State: Trail not in FOV. Skipping cleanup of trail at {currentTrailTarget}");
+                }
+                else
+                {
+                    Debug.Log($"🚫 FOV requirements not met. Skipping cleanup of trail at {currentTrailTarget}");
+                }
             }
 
             CleanupTrailInvestigation();

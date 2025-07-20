@@ -6,6 +6,7 @@ namespace GameProjectFM.AI.Core
     using Systems;
     using Behaviors;
     using Visual;
+    using static UnityEditorInternal.VersionControl.ListControl;
 
     public class EnemyAI : MonoBehaviour
     {
@@ -56,6 +57,10 @@ namespace GameProjectFM.AI.Core
         private EnemyState currentState = EnemyState.Patrolling;
         private EnemyState previousState = EnemyState.Patrolling;
 
+        // Stuck state protection
+        private float stateTimer = 0f;
+        private EnemyState lastState = EnemyState.Patrolling;
+
         // Public Properties
         public EnemyState CurrentState => currentState;
         public bool IsMoving => movementSystem != null && movementSystem.IsMoving;
@@ -105,6 +110,8 @@ namespace GameProjectFM.AI.Core
         {
             HandleAIUpdates();
             HandleStateTransitions();
+            HandleAIUpdates();
+            CheckForStuckState();
         }
 
         #region System Initialization
@@ -369,9 +376,92 @@ namespace GameProjectFM.AI.Core
 
         private void UpdateInvestigatingTrail()
         {
-            // Investigation is handled by coroutine in TrailInvestigationBehavior
-            // State will change when investigation is complete
+            // Check if investigation is still active
+            if (!trailBehavior.IsInvestigating)
+            {
+                // Investigation completed, check for next actions
+                if (trailBehavior.HasTrailTarget)
+                {
+                    // Still has trail target, likely moving to next trail
+                    ChangeState(EnemyState.MovingToTrail);
+                }
+                else if (trailBehavior.HasMoreTrailsToInvestigate())
+                {
+                    // More trails to investigate
+                    trailBehavior.MoveToNextTrail();
+                    ChangeState(EnemyState.MovingToTrail);
+                }
+                else
+                {
+                    // No more trails, return to patrol or check for player
+                    if (detectionSettings.chasePlayer && detectionSystem.PlayerDetected && !HasTrailsInFOV())
+                    {
+                        Debug.Log("🏃 Investigation complete, player still detected, starting chase");
+                        ChangeState(EnemyState.Chasing);
+                    }
+                    else
+                    {
+                        Debug.Log("🚶 Investigation complete, returning to patrol");
+                        ChangeState(EnemyState.Returning);
+                    }
+                }
+            }
+            else
+            {
+                // Investigation in progress - provide periodic status updates
+                if (Time.frameCount % 120 == 0) // Every 2 seconds at 60fps
+                {
+                    Debug.Log($"🔍 Investigating trail at {trailBehavior.CurrentTrailTarget}...");
+                }
+
+                // Safety check: if player is very close during investigation, interrupt
+                if (detectionSettings.chasePlayer && detectionSystem.PlayerDetected)
+                {
+                    float playerDistance = detectionSystem.GetDistanceToPlayer();
+                    if (playerDistance <= chaseSettings.captureDistance * 2f) // Within 2x capture distance
+                    {
+                        Debug.Log("⚠️ Player very close during investigation - interrupting to chase");
+                        trailBehavior.StopInvestigation();
+                        ChangeState(EnemyState.Chasing);
+                    }
+                }
+            }
         }
+
+        private void CheckForStuckState()
+        {
+            // Safety check: if AI is stuck in same state for too long, reset
+            if (currentState == lastState)
+            {
+                stateTimer += Time.deltaTime;
+
+                if (stateTimer > 30f) // 30 seconds timeout
+                {
+                    Debug.LogWarning("⚠️ AI appears stuck, forcing reset to patrol state");
+
+                    // Force end any active behaviors
+                    if (trailBehavior != null && trailBehavior.IsInAlertState)
+                    {
+                        trailBehavior.ForceEndAlertState();
+                    }
+
+                    if (chaseBehavior != null && chaseBehavior.IsChasing)
+                    {
+                        chaseBehavior.ForceEndChase();
+                    }
+
+                    ChangeState(EnemyState.Patrolling);
+                    stateTimer = 0f;
+                }
+            }
+            else
+            {
+                stateTimer = 0f;
+            }
+
+            lastState = currentState;
+        }
+
 
         private void UpdateReturning()
         {
