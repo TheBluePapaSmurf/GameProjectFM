@@ -1,4 +1,5 @@
 ﻿using UnityEngine;
+using UnityEngine.AI;
 using System.Collections;
 
 namespace GameProjectFM.AI.Behaviors
@@ -6,37 +7,64 @@ namespace GameProjectFM.AI.Behaviors
     using Core;
     using Systems;
 
-    public class ChaseBehavior : MonoBehaviour
+    public class NavMeshChaseBehavior : MonoBehaviour
     {
         [Header("Dependencies")]
-        [SerializeField] private MovementSystem movementSystem;
+        [SerializeField] private NavMeshMovementSystem navMovementSystem;
         [SerializeField] private DetectionSystem detectionSystem;
         [SerializeField] private ChaseSettings chaseSettings;
 
         // Chase state
         private bool isChasing;
-        private Vector3Int lastKnownPlayerPosition;
+        private Vector3 lastKnownPlayerPosition;
         private float chaseStartTime;
         private float lastPlayerSeenTime;
         private bool playerInFOV;
+        private Coroutine searchCoroutine;
+
+        // NavMesh specific
+        private NavMeshAgent navMeshAgent;
+        private float originalSpeed;
+        private Vector3 searchStartPosition;
+
+        // Speed transition
+        private Coroutine speedTransitionCoroutine;
+        private bool isTransitioningSpeed;
 
         // Events
         public System.Action OnChaseStarted;
         public System.Action OnChaseEnded;
         public System.Action OnPlayerCaught;
 
+        // Public Properties
         public bool IsChasing => isChasing;
-        public Vector3Int LastKnownPlayerPosition => lastKnownPlayerPosition;
+        public Vector3 LastKnownPlayerPosition => lastKnownPlayerPosition;
+        public bool PlayerInFOV => playerInFOV;
+        public float ChaseTimeRemaining => chaseSettings.maxChaseTime - (Time.time - chaseStartTime);
+        public float PersistentChaseTimeRemaining => chaseSettings.persistentChaseTime - (Time.time - lastPlayerSeenTime);
+        public float CurrentChaseSpeed => navMeshAgent != null ? navMeshAgent.speed : 0f;
 
-        public void Initialize(MovementSystem movement, DetectionSystem detection, ChaseSettings settings)
+        public void Initialize(NavMeshMovementSystem movement, DetectionSystem detection, ChaseSettings settings)
         {
-            movementSystem = movement;
+            navMovementSystem = movement;
             detectionSystem = detection;
             chaseSettings = settings;
 
+            // Get NavMeshAgent component
+            navMeshAgent = GetComponent<NavMeshAgent>();
+            if (navMeshAgent != null)
+            {
+                originalSpeed = navMeshAgent.speed;
+            }
+
             // Subscribe to detection events
-            detectionSystem.OnPlayerDetected += StartChase;
-            detectionSystem.OnPlayerLost += HandlePlayerLost;
+            if (detectionSystem != null)
+            {
+                detectionSystem.OnPlayerDetected += StartChase;
+                detectionSystem.OnPlayerLost += HandlePlayerLost;
+            }
+
+            Debug.Log("✅ NavMeshChaseBehavior initialized");
         }
 
         void OnDestroy()
@@ -59,11 +87,107 @@ namespace GameProjectFM.AI.Behaviors
             playerInFOV = true;
             UpdateLastKnownPosition(player.position);
 
+            // Apply chase speed based on settings
+            ApplyChaseSpeed();
+
             if (chaseSettings.showChaseDebug)
             {
-                Debug.Log("🏃 Starting chase! Player detected");
+                Debug.Log($"🏃 Starting chase! Player detected at {lastKnownPlayerPosition}");
+                Debug.Log($"💨 Chase speed: {CurrentChaseSpeed:F1} (Mode: {chaseSettings.chaseSpeedMode})");
             }
+
             OnChaseStarted?.Invoke();
+        }
+
+        private void ApplyChaseSpeed()
+        {
+            if (navMeshAgent == null) return;
+
+            float targetSpeed = CalculateChaseSpeed();
+
+            if (chaseSettings.smoothSpeedTransition && !isTransitioningSpeed)
+            {
+                // Smooth transition to chase speed
+                if (speedTransitionCoroutine != null)
+                {
+                    StopCoroutine(speedTransitionCoroutine);
+                }
+                speedTransitionCoroutine = StartCoroutine(TransitionToSpeed(targetSpeed));
+            }
+            else
+            {
+                // Immediate speed change
+                navMeshAgent.speed = targetSpeed;
+            }
+        }
+
+        private void ResetToNormalSpeed()
+        {
+            if (navMeshAgent == null) return;
+
+            if (chaseSettings.smoothSpeedTransition && !isTransitioningSpeed)
+            {
+                // Smooth transition back to normal speed
+                if (speedTransitionCoroutine != null)
+                {
+                    StopCoroutine(speedTransitionCoroutine);
+                }
+                speedTransitionCoroutine = StartCoroutine(TransitionToSpeed(originalSpeed));
+            }
+            else
+            {
+                // Immediate speed reset
+                navMeshAgent.speed = originalSpeed;
+            }
+        }
+
+        private float CalculateChaseSpeed()
+        {
+            switch (chaseSettings.chaseSpeedMode)
+            {
+                case ChaseSpeedMode.Multiplier:
+                    return originalSpeed * chaseSettings.chaseSpeedMultiplier;
+
+                case ChaseSpeedMode.Absolute:
+                    return chaseSettings.absoluteChaseSpeed;
+
+                case ChaseSpeedMode.Normal:
+                default:
+                    return originalSpeed;
+            }
+        }
+
+        private IEnumerator TransitionToSpeed(float targetSpeed)
+        {
+            isTransitioningSpeed = true;
+            float startSpeed = navMeshAgent.speed;
+            float elapsed = 0f;
+
+            if (chaseSettings.showChaseDebug)
+            {
+                Debug.Log($"🔄 Transitioning speed from {startSpeed:F1} to {targetSpeed:F1} over {chaseSettings.speedTransitionTime:F1}s");
+            }
+
+            while (elapsed < chaseSettings.speedTransitionTime)
+            {
+                elapsed += Time.deltaTime;
+                float t = elapsed / chaseSettings.speedTransitionTime;
+
+                // Smooth transition curve
+                t = Mathf.SmoothStep(0f, 1f, t);
+
+                navMeshAgent.speed = Mathf.Lerp(startSpeed, targetSpeed, t);
+                yield return null;
+            }
+
+            navMeshAgent.speed = targetSpeed;
+            isTransitioningSpeed = false;
+            speedTransitionCoroutine = null;
+
+            if (chaseSettings.showChaseDebug)
+            {
+                Debug.Log($"✅ Speed transition complete: {navMeshAgent.speed:F1}");
+            }
         }
 
         private void HandlePlayerLost()
@@ -96,7 +220,7 @@ namespace GameProjectFM.AI.Behaviors
                 return;
             }
 
-            // Update player visibility
+            // Update player visibility and position
             if (detectionSystem.PlayerDetected)
             {
                 if (!playerInFOV)
@@ -105,6 +229,13 @@ namespace GameProjectFM.AI.Behaviors
                     if (chaseSettings.showChaseDebug)
                     {
                         Debug.Log("👁️ Player back in sight!");
+                    }
+
+                    // Stop any ongoing search
+                    if (searchCoroutine != null)
+                    {
+                        StopCoroutine(searchCoroutine);
+                        searchCoroutine = null;
                     }
                 }
                 lastPlayerSeenTime = Time.time;
@@ -122,20 +253,16 @@ namespace GameProjectFM.AI.Behaviors
                 return;
             }
 
-            // Chase behavior
+            // Chase behavior based on player visibility
             if (playerInFOV && detectionSystem.PlayerDetected)
             {
-                // Player is visible, chase directly
-                ChaseToPosition(lastKnownPlayerPosition);
+                // Player is visible, chase directly to current position
+                ChaseToPosition(detectionSystem.DetectedPlayer.position);
             }
             else
             {
                 // Player not visible, move to last known position
-                if (chaseSettings.showChaseDebug && movementSystem.CurrentGridPosition != lastKnownPlayerPosition)
-                {
-                    Debug.Log($"🔍 Moving to last known position: {lastKnownPlayerPosition}");
-                }
-                ChaseToPosition(lastKnownPlayerPosition);
+                ChaseToLastKnownPosition();
             }
 
             // Check if player is caught
@@ -155,47 +282,102 @@ namespace GameProjectFM.AI.Behaviors
 
         private void UpdateLastKnownPosition(Vector3 playerWorldPosition)
         {
-            if (movementSystem != null)
+            lastKnownPlayerPosition = playerWorldPosition;
+
+            if (chaseSettings.showChaseDebug)
             {
-                // Convert to grid position for consistency
-                Grid grid = FindFirstObjectByType<Grid>();
-                if (grid != null)
+                Debug.Log($"📍 Updated last known player position: {lastKnownPlayerPosition}");
+            }
+        }
+
+        private void ChaseToPosition(Vector3 targetPosition)
+        {
+            if (navMovementSystem == null) return;
+
+            // Check if we can reach the target position
+            if (navMovementSystem.CanMoveTo(targetPosition))
+            {
+                // Move directly to target position
+                bool moveSuccess = navMovementSystem.MoveToPosition(targetPosition);
+
+                if (chaseSettings.showChaseDebug && moveSuccess)
                 {
-                    lastKnownPlayerPosition = grid.WorldToCell(playerWorldPosition);
+                    Debug.Log($"🎯 Chasing to position: {targetPosition}");
+                }
+                else if (!moveSuccess)
+                {
+                    Debug.LogWarning($"⚠️ Failed to chase to position: {targetPosition}");
+                }
+            }
+            else
+            {
+                // Try to get as close as possible
+                Vector3 closestPosition = GetClosestReachablePosition(targetPosition);
+                if (closestPosition != Vector3.zero)
+                {
+                    navMovementSystem.MoveToPosition(closestPosition);
+                    if (chaseSettings.showChaseDebug)
+                    {
+                        Debug.Log($"🎯 Target unreachable, chasing to closest position: {closestPosition}");
+                    }
+                }
+                else
+                {
+                    if (chaseSettings.showChaseDebug)
+                    {
+                        Debug.LogWarning($"⚠️ Cannot find path to target: {targetPosition}");
+                    }
                 }
             }
         }
 
-        private void ChaseToPosition(Vector3Int targetPosition)
+        private void ChaseToLastKnownPosition()
         {
-            if (movementSystem.IsMoving) return;
+            if (lastKnownPlayerPosition == Vector3.zero) return;
 
-            Vector3Int currentPos = movementSystem.CurrentGridPosition;
-            if (currentPos == targetPosition)
+            // Check if we're already close to last known position
+            float distanceToLastKnown = Vector3.Distance(transform.position, lastKnownPlayerPosition);
+
+            if (distanceToLastKnown <= 1.5f) // Close enough to last known position
             {
-                // Reached last known position, search briefly
-                if (!playerInFOV)
+                // Start searching if not already searching
+                if (searchCoroutine == null && !playerInFOV)
                 {
-                    StartCoroutine(SearchAtCurrentPosition());
+                    searchCoroutine = StartCoroutine(SearchAtCurrentPosition());
                 }
-                return;
             }
-
-            // Calculate direction to target
-            Vector3Int direction = targetPosition - currentPos;
-
-            // Move one step towards target (grid-based movement)
-            if (Mathf.Abs(direction.x) > Mathf.Abs(direction.z))
+            else
             {
-                direction = new Vector3Int(direction.x > 0 ? 1 : -1, 0, 0);
+                // Move to last known position
+                ChaseToPosition(lastKnownPlayerPosition);
+
+                if (chaseSettings.showChaseDebug)
+                {
+                    Debug.Log($"🔍 Moving to last known position: {lastKnownPlayerPosition} (distance: {distanceToLastKnown:F1})");
+                }
             }
-            else if (direction.z != 0)
+        }
+
+        private Vector3 GetClosestReachablePosition(Vector3 targetPosition)
+        {
+            // Use NavMesh.SamplePosition to find closest valid position
+            NavMeshHit hit;
+            float searchRadius = 5f; // Start with 5 unit radius
+
+            for (int i = 0; i < 3; i++) // Try expanding radius if needed
             {
-                direction = new Vector3Int(0, 0, direction.z > 0 ? 1 : -1);
+                if (NavMesh.SamplePosition(targetPosition, out hit, searchRadius, NavMesh.AllAreas))
+                {
+                    // Check if we can actually path to this position
+                    if (navMovementSystem.CanMoveTo(hit.position))
+                    {
+                        return hit.position;
+                    }
+                }
+                searchRadius *= 2f; // Double the search radius
             }
 
-            Vector3Int nextPosition = currentPos + direction;
-            movementSystem.MoveToPosition(nextPosition);
+            return Vector3.zero; // No reachable position found
         }
 
         private IEnumerator SearchAtCurrentPosition()
@@ -205,9 +387,32 @@ namespace GameProjectFM.AI.Behaviors
                 Debug.Log($"🔍 Reached last known position, searching for {chaseSettings.searchTime}s...");
             }
 
-            yield return new WaitForSeconds(chaseSettings.searchTime);
+            searchStartPosition = transform.position;
+            float searchTime = 0f;
 
-            // If still no player found and not in FOV, end chase
+            // Perform a simple search pattern (rotate to look around)
+            while (searchTime < chaseSettings.searchTime && isChasing && !playerInFOV)
+            {
+                // Rotate slowly to search
+                float rotationSpeed = 90f; // degrees per second
+                transform.Rotate(0, rotationSpeed * Time.deltaTime, 0);
+
+                searchTime += Time.deltaTime;
+                yield return null;
+            }
+
+            // If player was found during search, stop searching
+            if (playerInFOV)
+            {
+                if (chaseSettings.showChaseDebug)
+                {
+                    Debug.Log("👁️ Player found during search!");
+                }
+                searchCoroutine = null;
+                yield break;
+            }
+
+            // If still no player found, end chase
             if (!detectionSystem.PlayerDetected && !playerInFOV && isChasing)
             {
                 if (chaseSettings.showChaseDebug)
@@ -216,6 +421,8 @@ namespace GameProjectFM.AI.Behaviors
                 }
                 EndChase();
             }
+
+            searchCoroutine = null;
         }
 
         private void HandlePlayerCaptured()
@@ -232,17 +439,99 @@ namespace GameProjectFM.AI.Behaviors
             isChasing = false;
             playerInFOV = false;
 
+            // Stop any ongoing search
+            if (searchCoroutine != null)
+            {
+                StopCoroutine(searchCoroutine);
+                searchCoroutine = null;
+            }
+
+            // Reset speed to original
+            ResetToNormalSpeed();
+
             if (chaseSettings.showChaseDebug)
             {
                 Debug.Log("🏁 Chase ended");
+                Debug.Log($"💨 Speed reset to: {originalSpeed:F1}");
             }
+
             OnChaseEnded?.Invoke();
         }
 
         public void ForceEndChase()
         {
             StopAllCoroutines();
+            searchCoroutine = null;
+            speedTransitionCoroutine = null;
+            isTransitioningSpeed = false;
             EndChase();
+
+            if (chaseSettings.showChaseDebug)
+            {
+                Debug.Log("🛑 Chase force ended");
+            }
+        }
+
+        public void PauseChase()
+        {
+            if (isChasing && navMovementSystem != null)
+            {
+                navMovementSystem.StopMovement();
+            }
+        }
+
+        public void ResumeChase()
+        {
+            if (isChasing && lastKnownPlayerPosition != Vector3.zero)
+            {
+                ChaseToLastKnownPosition();
+            }
+        }
+
+        // Public utility methods
+        public float GetDistanceToLastKnownPosition()
+        {
+            if (lastKnownPlayerPosition == Vector3.zero) return float.MaxValue;
+            return Vector3.Distance(transform.position, lastKnownPlayerPosition);
+        }
+
+        public bool IsNearLastKnownPosition(float threshold = 2f)
+        {
+            return GetDistanceToLastKnownPosition() <= threshold;
+        }
+
+        public Vector3 GetDirectionToLastKnownPosition()
+        {
+            if (lastKnownPlayerPosition == Vector3.zero) return Vector3.zero;
+            return (lastKnownPlayerPosition - transform.position).normalized;
+        }
+
+        // Public speed control methods
+        public void SetChaseSpeedMultiplier(float multiplier)
+        {
+            chaseSettings.chaseSpeedMultiplier = Mathf.Clamp(multiplier, 1f, 3f);
+            if (isChasing && chaseSettings.chaseSpeedMode == ChaseSpeedMode.Multiplier)
+            {
+                ApplyChaseSpeed();
+            }
+        }
+
+        public void SetAbsoluteChaseSpeed(float speed)
+        {
+            chaseSettings.absoluteChaseSpeed = Mathf.Clamp(speed, 1f, 10f);
+            if (isChasing && chaseSettings.chaseSpeedMode == ChaseSpeedMode.Absolute)
+            {
+                ApplyChaseSpeed();
+            }
+        }
+
+        public void SetChaseSpeedMode(ChaseSpeedMode mode)
+        {
+            chaseSettings.chaseSpeedMode = mode;
+            if (isChasing)
+            {
+                ApplyChaseSpeed();
+            }
         }
 
         // Visual Debug
@@ -251,26 +540,20 @@ namespace GameProjectFM.AI.Behaviors
             if (!isChasing || chaseSettings == null) return;
 
             // Draw path to last known position
-            if (lastKnownPlayerPosition != Vector3Int.zero)
+            if (lastKnownPlayerPosition != Vector3.zero)
             {
-                Grid grid = FindFirstObjectByType<Grid>();
-                if (grid != null)
-                {
-                    Vector3 lastKnownWorldPos = grid.CellToWorld(lastKnownPlayerPosition);
-                    lastKnownWorldPos += grid.cellSize * 0.5f;
+                // Draw line to last known position
+                Gizmos.color = chaseSettings.chasePathColor;
+                Gizmos.DrawLine(transform.position, lastKnownPlayerPosition);
 
-                    // Draw line to last known position
-                    Gizmos.color = chaseSettings.chasePathColor;
-                    Gizmos.DrawLine(transform.position, lastKnownWorldPos);
-
-                    // Draw last known position marker
-                    Gizmos.color = chaseSettings.lastKnownPositionColor;
-                    Gizmos.DrawWireSphere(lastKnownWorldPos, 0.5f);
+                // Draw last known position marker
+                Gizmos.color = chaseSettings.lastKnownPositionColor;
+                Gizmos.DrawWireSphere(lastKnownPlayerPosition, 0.5f);
+                Gizmos.DrawSphere(lastKnownPlayerPosition, 0.2f);
 
 #if UNITY_EDITOR
-                    UnityEditor.Handles.Label(lastKnownWorldPos + Vector3.up, "LAST SEEN");
+                UnityEditor.Handles.Label(lastKnownPlayerPosition + Vector3.up, "LAST SEEN");
 #endif
-                }
             }
 
             // Draw capture radius around AI
@@ -278,6 +561,56 @@ namespace GameProjectFM.AI.Behaviors
             {
                 Gizmos.color = Color.red;
                 Gizmos.DrawWireSphere(transform.position, chaseSettings.captureDistance);
+
+                // Draw fill circle to show capture zone
+                Gizmos.color = new Color(1f, 0f, 0f, 0.2f);
+                Gizmos.DrawSphere(transform.position, chaseSettings.captureDistance);
+            }
+
+            // Draw current chase state
+            if (Application.isPlaying)
+            {
+                Gizmos.color = Color.yellow;
+                Gizmos.DrawWireCube(transform.position, Vector3.one * 0.5f);
+
+#if UNITY_EDITOR
+                Vector3 statusPos = transform.position + Vector3.up * 2.5f;
+                string status = $"CHASE: {(playerInFOV ? "VISUAL" : "TRACKING")}";
+                UnityEditor.Handles.Label(statusPos, status);
+
+                // Show speed info
+                Vector3 speedPos = transform.position + Vector3.up * 3.5f;
+                string speedInfo = $"Speed: {CurrentChaseSpeed:F1} ({chaseSettings.chaseSpeedMode})";
+                UnityEditor.Handles.Label(speedPos, speedInfo);
+
+                // Show timers
+                Vector3 timerPos = transform.position + Vector3.up * 4f;
+                string timers = $"Max: {ChaseTimeRemaining:F1}s | Persist: {PersistentChaseTimeRemaining:F1}s";
+                UnityEditor.Handles.Label(timerPos, timers);
+#endif
+            }
+
+            // Draw search area if searching
+            if (searchCoroutine != null && searchStartPosition != Vector3.zero)
+            {
+                Gizmos.color = Color.cyan;
+                Gizmos.DrawWireSphere(searchStartPosition, 2f);
+
+#if UNITY_EDITOR
+                UnityEditor.Handles.Label(searchStartPosition + Vector3.up * 1.5f, "SEARCHING");
+#endif
+            }
+
+            // Draw NavMesh path if available
+            if (navMeshAgent != null && navMeshAgent.hasPath)
+            {
+                Gizmos.color = Color.blue;
+                Vector3[] pathCorners = navMeshAgent.path.corners;
+
+                for (int i = 0; i < pathCorners.Length - 1; i++)
+                {
+                    Gizmos.DrawLine(pathCorners[i], pathCorners[i + 1]);
+                }
             }
         }
     }

@@ -1,67 +1,44 @@
 using UnityEngine;
-using System.Collections.Generic;
+using UnityEngine.AI;
 
 namespace GameProjectFM.AI.Core
 {
     [System.Serializable]
-    public class GridMovementSettings
+    public class NavMeshMovementSettings
     {
-        [Header("Grid Movement")]
-        public Grid grid;
-        public float moveSpeed = 3f;
-        public bool enableRotation = true;
-        public float rotationSpeed = 8f;
+        [Header("Movement Settings")]
+        public float moveSpeed = 3.5f;
+        public float rotationSpeed = 120f;
+        public float acceleration = 8f;
+        public float stoppingDistance = 0.1f;
+        public bool autoBraking = true;
 
-        [Header("Movement Curve")]
-        public AnimationCurve movementCurve = AnimationCurve.EaseInOut(0f, 0f, 1f, 1f);
-        public float bezierHeight = 0.5f;
-        public bool useBezierMovement = true;
+        [Header("Agent Properties")]
+        public float agentRadius = 0.5f;
+        public float agentHeight = 2f;
+        public ObstacleAvoidanceType obstacleAvoidanceType = ObstacleAvoidanceType.LowQualityObstacleAvoidance;
+        public int avoidancePriority = 50;
+
+        [Header("Pathfinding")]
+        public int areaMask = -1;
+        public bool autoRepath = true;
     }
 
     [System.Serializable]
-    public class PatrolSettings
+    public class NavMeshPatrolSettings
     {
-        [Header("Patrol Settings")]
+        [Header("Patrol Points")]
+        public Transform[] patrolPoints = new Transform[0];
         public PatrolType patrolType = PatrolType.Loop;
-
-        [SerializeField]
-        public Vector3Int[] patrolPointsArray = new Vector3Int[4];
-
-        [System.NonSerialized]
-        private List<Vector3Int> _patrolPointsList;
-
-        public List<Vector3Int> patrolPoints
-        {
-            get
-            {
-                if (_patrolPointsList == null)
-                {
-                    _patrolPointsList = new List<Vector3Int>();
-                    if (patrolPointsArray != null)
-                    {
-                        for (int i = 0; i < patrolPointsArray.Length; i++)
-                        {
-                            if (patrolPointsArray[i] != Vector3Int.zero || i == 0)
-                            {
-                                _patrolPointsList.Add(patrolPointsArray[i]);
-                            }
-                        }
-                    }
-                }
-                return _patrolPointsList;
-            }
-        }
-
         public float waitTimeAtPoint = 2f;
         public bool useRandomWaitTime = false;
         public Vector2 randomWaitRange = new Vector2(1f, 3f);
 
-        public void RefreshPatrolPoints()
-        {
-            _patrolPointsList = null; // Force refresh
-        }
+        [Header("Random Patrol")]
+        public bool useRandomPatrol = false;
+        public float randomPatrolRadius = 10f;
+        public Vector3 patrolCenter = Vector3.zero;
     }
-
 
     [System.Serializable]
     public class LookAroundSettings
@@ -140,18 +117,27 @@ namespace GameProjectFM.AI.Core
     [System.Serializable]
     public class VisualSettings
     {
-        [Header("Visual Feedback")]
-        public bool showPatrolPath = true;
+        [Header("Field of View")]
         public bool showFieldOfView = true;
         public bool showFovInEditor = true;
+
+        [Header("FOV Material")]
+        [Tooltip("Custom material for FOV visualization. If null, uses default material with fovColor.")]
+        public Material customFovMaterial;
+        [Tooltip("Fallback color when no custom material is assigned")]
+        public Color fovColor = new Color(1f, 0f, 0f, 0.3f);
+
+        [Header("Editor Visualization")]
+        public Color fovEditorColor = new Color(1f, 1f, 0f, 0.2f);
+        public Color fovBorderColor = Color.yellow;
+
+        [Header("Visual Feedback")]
+        public bool showPatrolPath = true;
         public bool showTrailDetection = true;
         public bool showPlayerDetection = true;
 
         [Header("Colors")]
         public Color patrolPathColor = Color.yellow;
-        public Color fovColor = new Color(1f, 0f, 0f, 0.3f);
-        public Color fovBorderColor = Color.red;
-        public Color fovEditorColor = new Color(1f, 0f, 0f, 0.1f);
         public Color playerDetectedColor = Color.green;
         public Color playerInFOVColor = Color.yellow;
     }
@@ -169,6 +155,25 @@ namespace GameProjectFM.AI.Core
         [Tooltip("Time to search at last known position")]
         public float searchTime = 3f;
 
+        [Header("Chase Speed Settings")]
+        [Tooltip("How to handle speed during chase")]
+        public ChaseSpeedMode chaseSpeedMode = ChaseSpeedMode.Multiplier;
+
+        [Tooltip("Speed multiplier during chase (when using Multiplier mode)")]
+        [Range(1f, 3f)]
+        public float chaseSpeedMultiplier = 1.5f;
+
+        [Tooltip("Absolute speed during chase (when using Absolute mode)")]
+        [Range(1f, 10f)]
+        public float absoluteChaseSpeed = 5f;
+
+        [Tooltip("Enable smooth speed transitions")]
+        public bool smoothSpeedTransition = true;
+
+        [Tooltip("Speed transition time in seconds")]
+        [Range(0.1f, 2f)]
+        public float speedTransitionTime = 0.5f;
+
         [Header("Capture Settings")]
         [Tooltip("Distance within which player is considered caught")]
         public float captureDistance = 1.2f;
@@ -179,6 +184,16 @@ namespace GameProjectFM.AI.Core
         [Header("Chase Visual")]
         public Color chasePathColor = Color.red;
         public Color lastKnownPositionColor = Color.orange;
+    }
+
+    public enum ChaseSpeedMode
+    {
+        [Tooltip("Multiply normal speed by chase speed multiplier")]
+        Multiplier,
+        [Tooltip("Use absolute chase speed value")]
+        Absolute,
+        [Tooltip("Keep normal movement speed during chase")]
+        Normal
     }
 
 }

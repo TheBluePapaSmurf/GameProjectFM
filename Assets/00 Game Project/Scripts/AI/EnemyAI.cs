@@ -1,4 +1,5 @@
 ﻿using UnityEngine;
+using UnityEngine.AI;
 using System.Collections;
 
 namespace GameProjectFM.AI.Core
@@ -6,17 +7,14 @@ namespace GameProjectFM.AI.Core
     using Systems;
     using Behaviors;
     using Visual;
-    using static UnityEditorInternal.VersionControl.ListControl;
 
     public class EnemyAI : MonoBehaviour
     {
-        [Header("Grid Movement")]
-        [SerializeField] private GridMovementSettings gridMovementSettings = new GridMovementSettings();
+        [Header("NavMesh Movement")]
+        [SerializeField] private NavMeshMovementSettings navMeshMovementSettings = new NavMeshMovementSettings();
 
-        [Header("Patrol Settings")]
-        [SerializeField] private PatrolSettings patrolSettings = new PatrolSettings();
-
-        [Header("Look Around")]
+        [Header("Linear Path Patrol")]
+        [SerializeField] private LinearPathBehaviour linearPathBehaviour;
         [SerializeField] private LookAroundSettings lookAroundSettings = new LookAroundSettings();
 
         [Header("Field of View")]
@@ -41,14 +39,15 @@ namespace GameProjectFM.AI.Core
         [SerializeField] private PlayerTrailManager trailManager;
 
         // Core Systems (auto-created)
-        private MovementSystem movementSystem;
+        private NavMeshMovementSystem navMovementSystem;
+        private NavMeshAgent navMeshAgent;
         private FOVSystem fovSystem;
         private DetectionSystem detectionSystem;
 
         // Behavior Systems (auto-created)
-        private PatrolBehavior patrolBehavior;
-        private ChaseBehavior chaseBehavior;
-        private TrailInvestigationBehavior trailBehavior;
+        private NavMeshLinearPatrolBehavior linearPatrolBehavior;
+        private NavMeshChaseBehavior chaseBehavior;
+        private NavMeshTrailInvestigationBehavior trailBehavior;
 
         // Visual Components (auto-created)
         private FOVVisualizer fovVisualizer;
@@ -61,18 +60,22 @@ namespace GameProjectFM.AI.Core
         private float stateTimer = 0f;
         private EnemyState lastState = EnemyState.Patrolling;
 
+        // Navigation state
+        private Vector3 lastKnownPlayerPosition;
+        private float waitTimer = 0f;
+
         // Public Properties
         public EnemyState CurrentState => currentState;
-        public bool IsMoving => movementSystem != null && movementSystem.IsMoving;
-        public bool IsBusy => (patrolBehavior != null && patrolBehavior.IsBusy) ||
-                              (chaseBehavior != null && chaseBehavior.IsChasing) ||
-                              (trailBehavior != null && trailBehavior.IsInvestigating);
-        public Vector3Int CurrentGridPosition => movementSystem != null ? movementSystem.CurrentGridPosition : Vector3Int.zero;
+        public bool IsMoving => navMovementSystem != null && navMovementSystem.IsMoving;
+        public bool IsBusy => IsMoving || waitTimer > 0f;
+        public Vector3 CurrentPosition => transform.position;
+        public bool HasPath => navMeshAgent != null && navMeshAgent.hasPath;
 
         void Awake()
         {
             EnsureSettingsInitialized();
-            InitializeSystems();
+            InitializeNavMeshSystems();
+            InitializeOtherSystems();
             InitializeBehaviors();
             InitializeVisualComponents();
             ConnectEventHandlers();
@@ -86,8 +89,7 @@ namespace GameProjectFM.AI.Core
         private void EnsureSettingsInitialized()
         {
             // Force initialization of all settings to prevent null reference exceptions
-            if (gridMovementSettings == null) gridMovementSettings = new GridMovementSettings();
-            if (patrolSettings == null) patrolSettings = new PatrolSettings();
+            if (navMeshMovementSettings == null) navMeshMovementSettings = new NavMeshMovementSettings();
             if (lookAroundSettings == null) lookAroundSettings = new LookAroundSettings();
             if (fovSettings == null) fovSettings = new FOVSettings();
             if (detectionSettings == null) detectionSettings = new DetectionSettings();
@@ -96,9 +98,8 @@ namespace GameProjectFM.AI.Core
             if (fovCleanupSettings == null) fovCleanupSettings = new FOVCleanupSettings();
             if (visualSettings == null) visualSettings = new VisualSettings();
 
-            Debug.Log("✅ EnemyAI: All settings initialized (including chase settings)");
+            Debug.Log("✅ EnemyAI: All NavMesh settings initialized");
         }
-
 
         void Start()
         {
@@ -108,23 +109,33 @@ namespace GameProjectFM.AI.Core
 
         void Update()
         {
+            HandleTimers();
             HandleAIUpdates();
             HandleStateTransitions();
-            HandleAIUpdates();
             CheckForStuckState();
         }
 
-        #region System Initialization
+        #region NavMesh System Initialization
 
-        private void InitializeSystems()
+        private void InitializeNavMeshSystems()
         {
-            // Create or get movement system
-            movementSystem = GetComponent<MovementSystem>();
-            if (movementSystem == null)
+            // Get or add NavMeshAgent
+            navMeshAgent = GetComponent<NavMeshAgent>();
+            if (navMeshAgent == null)
             {
-                movementSystem = gameObject.AddComponent<MovementSystem>();
+                navMeshAgent = gameObject.AddComponent<NavMeshAgent>();
             }
 
+            // Get or add NavMeshMovementSystem
+            navMovementSystem = GetComponent<NavMeshMovementSystem>();
+            if (navMovementSystem == null)
+            {
+                navMovementSystem = gameObject.AddComponent<NavMeshMovementSystem>();
+            }
+        }
+
+        private void InitializeOtherSystems()
+        {
             // Create or get FOV system
             fovSystem = GetComponent<FOVSystem>();
             if (fovSystem == null)
@@ -142,39 +153,29 @@ namespace GameProjectFM.AI.Core
 
         private void InitializeBehaviors()
         {
-            // Initialize Patrol Behavior
-            patrolBehavior = GetComponent<PatrolBehavior>();
-            if (patrolBehavior == null)
+            // Initialize NavMesh Linear Patrol Behavior
+            linearPatrolBehavior = GetComponent<NavMeshLinearPatrolBehavior>();
+            if (linearPatrolBehavior == null)
             {
-                patrolBehavior = gameObject.AddComponent<PatrolBehavior>();
+                linearPatrolBehavior = gameObject.AddComponent<NavMeshLinearPatrolBehavior>();
             }
-            patrolBehavior.Initialize(patrolSettings, lookAroundSettings, movementSystem);
 
-            // Initialize Chase Behavior
-            chaseBehavior = GetComponent<ChaseBehavior>();
+            // Initialize NavMesh Chase Behavior
+            chaseBehavior = GetComponent<NavMeshChaseBehavior>();
             if (chaseBehavior == null)
             {
-                chaseBehavior = gameObject.AddComponent<ChaseBehavior>();
+                chaseBehavior = gameObject.AddComponent<NavMeshChaseBehavior>();
             }
-            chaseBehavior.Initialize(movementSystem, detectionSystem, chaseSettings);
 
-            // Initialize Trail Investigation Behavior
-            // Initialize Trail Investigation Behavior
-            trailBehavior = GetComponent<TrailInvestigationBehavior>();
+            // Initialize NavMesh Trail Investigation Behavior
+            trailBehavior = GetComponent<NavMeshTrailInvestigationBehavior>();
             if (trailBehavior == null)
             {
-                trailBehavior = gameObject.AddComponent<TrailInvestigationBehavior>();
+                trailBehavior = gameObject.AddComponent<NavMeshTrailInvestigationBehavior>();
             }
 
-            // Find Grid and get player transform
-            Grid gameGrid = FindFirstObjectByType<Grid>();
-            Transform playerTransform = detectionSettings.player;
-
-            trailBehavior.Initialize(trailSettings, fovCleanupSettings, movementSystem, fovSystem, trailManager, gameGrid, playerTransform);
-
-            Debug.Log("✅ EnemyAI: All behaviors initialized (including enhanced chase)");
+            Debug.Log("✅ EnemyAI: All NavMesh behaviors initialized");
         }
-
 
         private void InitializeVisualComponents()
         {
@@ -188,41 +189,34 @@ namespace GameProjectFM.AI.Core
 
         private void InitializeAllSystems()
         {
-            // Initialize Movement System
-            movementSystem = GetComponent<MovementSystem>();
-            if (movementSystem == null)
-            {
-                movementSystem = gameObject.AddComponent<MovementSystem>();
-            }
-            movementSystem.Initialize(gridMovementSettings);
+            // Initialize NavMesh Movement System
+            navMovementSystem.Initialize(navMeshMovementSettings);
 
             // Initialize FOV System first (needed for detection)
-            fovSystem = GetComponent<FOVSystem>();
-            if (fovSystem == null)
-            {
-                fovSystem = gameObject.AddComponent<FOVSystem>();
-            }
-            // Pass both fovSettings AND the player transform
             fovSystem.Initialize(fovSettings, detectionSettings.player);
 
             // Initialize Detection System (depends on FOV)
-            detectionSystem = GetComponent<DetectionSystem>();
-            if (detectionSystem == null)
-            {
-                detectionSystem = gameObject.AddComponent<DetectionSystem>();
-            }
             detectionSystem.Initialize(detectionSettings, fovSettings, fovSystem);
 
-            // Initialize behaviors
-            patrolBehavior.Initialize(patrolSettings, lookAroundSettings, movementSystem);
-            // Initialize Chase Behavior
-            chaseBehavior = GetComponent<ChaseBehavior>();
-            if (chaseBehavior == null)
+            // Initialize linear patrol behavior with LinearPathBehaviour
+            if (linearPatrolBehavior != null && linearPathBehaviour != null)
             {
-                chaseBehavior = gameObject.AddComponent<ChaseBehavior>();
+                linearPatrolBehavior.Initialize(linearPathBehaviour, lookAroundSettings, navMovementSystem);
             }
-            chaseBehavior.Initialize(movementSystem, detectionSystem, chaseSettings);
-            trailBehavior.Initialize(trailSettings, fovCleanupSettings, movementSystem, fovSystem, trailManager, gridMovementSettings.grid, detectionSettings.player);
+            else
+            {
+                Debug.LogWarning("⚠️ LinearPathBehaviour not assigned to EnemyAI! Patrol will not work.");
+            }
+
+            if (chaseBehavior != null)
+            {
+                chaseBehavior.Initialize(navMovementSystem, detectionSystem, chaseSettings);
+            }
+
+            if (trailBehavior != null)
+            {
+                trailBehavior.Initialize(trailSettings, fovCleanupSettings, navMovementSystem, fovSystem, trailManager, detectionSettings.player);
+            }
 
             // Initialize visual components (optional)
             if (fovVisualizer != null)
@@ -230,55 +224,78 @@ namespace GameProjectFM.AI.Core
                 fovVisualizer.Initialize(visualSettings, fovSystem);
             }
 
-            Debug.Log("✅ EnemyAI: All systems initialized (FOV-based detection)");
+            Debug.Log("✅ EnemyAI: All NavMesh systems initialized");
         }
 
         private void ConnectEventHandlers()
         {
-            // Movement events
-            movementSystem.OnPositionChanged += HandlePositionChanged;
-            movementSystem.OnMovementStateChanged += HandleMovementStateChanged;
+            // NavMesh Movement events
+            if (navMovementSystem != null)
+            {
+                navMovementSystem.OnPositionChanged += HandlePositionChanged;
+                navMovementSystem.OnMovementStateChanged += HandleMovementStateChanged;
+                navMovementSystem.OnDestinationReached += HandleDestinationReached;
+            }
 
             // Detection events
-            detectionSystem.OnPlayerDetected += HandlePlayerDetected;
-            detectionSystem.OnPlayerLost += HandlePlayerLost;
-
-            // Chase events
-            chaseBehavior.OnChaseStarted += HandleChaseStarted;
-            chaseBehavior.OnChaseEnded += HandleChaseEnded;
-            chaseBehavior.OnPlayerCaught += HandlePlayerCaught;
-
-            // Patrol events
-            patrolBehavior.OnPatrolPointReached += HandlePatrolPointReached;
-            patrolBehavior.OnPatrolCompleted += HandlePatrolCompleted;
-
-            // Detection System Events
             if (detectionSystem != null)
             {
                 detectionSystem.OnPlayerDetected += HandlePlayerDetected;
                 detectionSystem.OnPlayerLost += HandlePlayerLost;
             }
 
+            // Chase events
+            if (chaseBehavior != null)
+            {
+                chaseBehavior.OnChaseStarted += HandleChaseStarted;
+                chaseBehavior.OnChaseEnded += HandleChaseEnded;
+                chaseBehavior.OnPlayerCaught += HandlePlayerCaught;
+            }
+
+            // Linear Patrol events
+            if (linearPatrolBehavior != null)
+            {
+                linearPatrolBehavior.OnPatrolPointReached += HandlePatrolPointReached;
+                linearPatrolBehavior.OnPatrolCompleted += HandlePatrolCompleted;
+            }
+
             // Trail events
-            trailBehavior.OnTrailDetected += HandleTrailDetected;
-            trailBehavior.OnTrailInvestigationStarted += HandleTrailInvestigationStarted;
-            trailBehavior.OnTrailCleaned += HandleTrailCleaned;
-            trailBehavior.OnTrailInvestigationCompleted += HandleTrailInvestigationCompleted;
+            if (trailBehavior != null)
+            {
+                trailBehavior.OnTrailDetected += HandleTrailDetected;
+                trailBehavior.OnTrailInvestigationStarted += HandleTrailInvestigationStarted;
+                trailBehavior.OnTrailCleaned += HandleTrailCleaned;
+                trailBehavior.OnTrailInvestigationCompleted += HandleTrailInvestigationCompleted;
+            }
 
             // FOV events
-            fovSystem.OnPlayerFOVChanged += HandlePlayerFOVChanged;
+            if (fovSystem != null)
+            {
+                fovSystem.OnPlayerFOVChanged += HandlePlayerFOVChanged;
+            }
         }
 
         #endregion
 
         #region AI Update Logic
 
+        private void HandleTimers()
+        {
+            if (waitTimer > 0f)
+            {
+                waitTimer -= Time.deltaTime;
+            }
+        }
+
         private void HandleAIUpdates()
         {
             // Always check for trails first (except when investigating)
             if (currentState != EnemyState.InvestigatingTrail && trailSettings.investigateTrails)
             {
-                trailBehavior.CheckForTrails();
+                if (trailBehavior != null)
+                {
+                    trailBehavior.CheckForTrails();
+                }
             }
 
             // Update behaviors based on current state
@@ -289,13 +306,6 @@ namespace GameProjectFM.AI.Core
                     break;
 
                 case EnemyState.Chasing:
-                    // Check if we should interrupt chase for trails
-                    if (HasTrailsInFOV())
-                    {
-                        Debug.Log("🚫 Interrupting chase - trails detected in FOV");
-                        chaseBehavior.ForceEndChase();
-                        return;
-                    }
                     UpdateChasing();
                     break;
 
@@ -315,79 +325,90 @@ namespace GameProjectFM.AI.Core
 
         private void UpdatePatrolling()
         {
-            if (!patrolBehavior.IsBusy)
+            if (waitTimer > 0f) return;
+
+            // Check if LinearPathBehaviour is configured and patrol behavior is ready
+            if (linearPathBehaviour != null && linearPathBehaviour.transform.childCount > 0)
             {
-                patrolBehavior.ResumePatrol();
+                // Make sure linear patrol is running
+                if (!linearPatrolBehavior.IsPatrolling && !linearPatrolBehavior.IsBusy)
+                {
+                    linearPatrolBehavior.StartPatrol();
+                }
+            }
+            else
+            {
+                Debug.LogWarning("⚠️ LinearPathBehaviour not configured or has no patrol points!");
             }
         }
 
         private void UpdateChasing()
         {
-            chaseBehavior.UpdateChase();
+            if (chaseBehavior != null)
+            {
+                chaseBehavior.UpdateChase();
+            }
+            else if (detectionSettings.player != null)
+            {
+                // Fallback direct chase logic
+                lastKnownPlayerPosition = detectionSettings.player.position;
+                navMovementSystem.MoveToPosition(lastKnownPlayerPosition);
+
+                // Check if player is caught
+                if (Vector3.Distance(transform.position, detectionSettings.player.position) <= chaseSettings.captureDistance)
+                {
+                    HandlePlayerCaught();
+                }
+            }
         }
 
         private void UpdateMovingToTrail()
         {
-            if (trailBehavior.HasTrailTarget)
+            if (trailBehavior != null)
             {
-                if (trailBehavior.IsAtTrailTarget())
+                if (trailBehavior.HasTrailTarget)
                 {
-                    ChangeState(EnemyState.InvestigatingTrail);
-                    trailBehavior.StartInvestigationSequence();
-                }
-                else if (!movementSystem.IsMoving)
-                {
-                    // Move towards trail
-                    Vector3Int direction = trailBehavior.GetDirectionToTarget();
-                    if (direction != Vector3Int.zero)
+                    if (trailBehavior.IsAtTrailTarget())
                     {
-                        Vector3Int targetPos = movementSystem.CurrentGridPosition + direction;
-                        movementSystem.MoveToPosition(targetPos);
-                        Debug.Log($"🚶 Moving towards trail: {movementSystem.CurrentGridPosition} -> {targetPos} (target: {trailBehavior.CurrentTrailTarget})");
+                        ChangeState(EnemyState.InvestigatingTrail);
+                        trailBehavior.StartInvestigationSequence();
                     }
-                    else
+                    else if (!navMovementSystem.IsMoving)
                     {
-                        Debug.LogWarning($"No valid direction to trail target {trailBehavior.CurrentTrailTarget}");
-                        // Check for other trails before giving up
-                        if (trailBehavior.HasMoreTrailsToInvestigate())
-                        {
-                            trailBehavior.MoveToNextTrail();
-                        }
-                        else
-                        {
-                            ChangeState(EnemyState.Returning);
-                        }
+                        Vector3 trailWorldPos = trailBehavior.GetTrailWorldPosition();
+                        navMovementSystem.MoveToPosition(trailWorldPos);
+                        Debug.Log($"🚶 Moving towards trail at: {trailWorldPos}");
                     }
-                }
-            }
-            else
-            {
-                // No current target, check for new trails
-                if (trailBehavior.HasMoreTrailsToInvestigate())
-                {
-                    trailBehavior.MoveToNextTrail();
                 }
                 else
                 {
-                    ChangeState(EnemyState.Returning);
+                    // No current target, check for new trails
+                    if (trailBehavior.HasMoreTrailsToInvestigate())
+                    {
+                        trailBehavior.MoveToNextTrail();
+                    }
+                    else
+                    {
+                        ChangeState(EnemyState.Returning);
+                    }
                 }
             }
         }
 
         private void UpdateInvestigatingTrail()
         {
+            if (trailBehavior == null) return;
+
             // Check if investigation is still active
             if (!trailBehavior.IsInvestigating)
             {
                 // Investigation completed, check for next actions
                 if (trailBehavior.HasTrailTarget)
                 {
-                    // Still has trail target, likely moving to next trail
                     ChangeState(EnemyState.MovingToTrail);
                 }
                 else if (trailBehavior.HasMoreTrailsToInvestigate())
                 {
-                    // More trails to investigate
                     trailBehavior.MoveToNextTrail();
                     ChangeState(EnemyState.MovingToTrail);
                 }
@@ -408,17 +429,11 @@ namespace GameProjectFM.AI.Core
             }
             else
             {
-                // Investigation in progress - provide periodic status updates
-                if (Time.frameCount % 120 == 0) // Every 2 seconds at 60fps
-                {
-                    Debug.Log($"🔍 Investigating trail at {trailBehavior.CurrentTrailTarget}...");
-                }
-
                 // Safety check: if player is very close during investigation, interrupt
                 if (detectionSettings.chasePlayer && detectionSystem.PlayerDetected)
                 {
                     float playerDistance = detectionSystem.GetDistanceToPlayer();
-                    if (playerDistance <= chaseSettings.captureDistance * 2f) // Within 2x capture distance
+                    if (playerDistance <= chaseSettings.captureDistance * 2f)
                     {
                         Debug.Log("⚠️ Player very close during investigation - interrupting to chase");
                         trailBehavior.StopInvestigation();
@@ -426,6 +441,39 @@ namespace GameProjectFM.AI.Core
                     }
                 }
             }
+        }
+
+        private void UpdateReturning()
+        {
+            if (!navMovementSystem.IsMoving)
+            {
+                // Return to closest patrol point from LinearPathBehaviour
+                Transform closestPatrolPoint = GetNearestPatrolPoint();
+                if (closestPatrolPoint != null)
+                {
+                    if (navMovementSystem.IsNearPosition(closestPatrolPoint.position, 2f))
+                    {
+                        ChangeState(EnemyState.Patrolling);
+                        navMovementSystem.SetSpeed(navMeshMovementSettings.moveSpeed); // Reset speed
+                    }
+                    else
+                    {
+                        navMovementSystem.MoveToPosition(closestPatrolPoint.position);
+                    }
+                }
+                else
+                {
+                    // No patrol points, just resume patrolling
+                    ChangeState(EnemyState.Patrolling);
+                }
+            }
+        }
+
+        private Transform GetNearestPatrolPoint()
+        {
+            if (linearPathBehaviour == null) return null;
+
+            return linearPathBehaviour.GetClosestPoint(transform.position);
         }
 
         private void CheckForStuckState()
@@ -462,30 +510,6 @@ namespace GameProjectFM.AI.Core
             lastState = currentState;
         }
 
-
-        private void UpdateReturning()
-        {
-            if (!movementSystem.IsMoving)
-            {
-                // Return to closest patrol point
-                Vector3Int closestPatrolPoint = patrolBehavior.GetClosestPatrolPoint();
-                if (closestPatrolPoint != movementSystem.CurrentGridPosition)
-                {
-                    Vector3Int direction = movementSystem.GetDirectionToTarget(closestPatrolPoint);
-                    if (direction != Vector3Int.zero)
-                    {
-                        Vector3Int targetPos = movementSystem.CurrentGridPosition + direction;
-                        movementSystem.MoveToPosition(targetPos);
-                    }
-                }
-                else
-                {
-                    // Reached patrol point, resume patrolling
-                    ChangeState(EnemyState.Patrolling);
-                }
-            }
-        }
-
         #endregion
 
         #region State Management
@@ -493,7 +517,7 @@ namespace GameProjectFM.AI.Core
         private void HandleStateTransitions()
         {
             // PRIORITY 1: Trail investigation (highest priority when player detected)
-            if (trailBehavior.HasTrailTarget && currentState == EnemyState.Patrolling)
+            if (trailBehavior != null && trailBehavior.HasTrailTarget && currentState == EnemyState.Patrolling)
             {
                 ChangeState(EnemyState.MovingToTrail);
                 return;
@@ -510,8 +534,7 @@ namespace GameProjectFM.AI.Core
                 else if (HasTrailsInFOV() && (currentState == EnemyState.Chasing || currentState == EnemyState.Patrolling))
                 {
                     Debug.Log("🔄 Stopping chase - trails detected in FOV");
-                    // Force end chase and let trail investigation take priority
-                    if (chaseBehavior.IsChasing)
+                    if (chaseBehavior != null && chaseBehavior.IsChasing)
                     {
                         chaseBehavior.ForceEndChase();
                     }
@@ -520,12 +543,11 @@ namespace GameProjectFM.AI.Core
             }
 
             // PRIORITY 3: Return to patrolling if no other activities
-            if (currentState == EnemyState.Chasing && !chaseBehavior.IsChasing)
+            if (currentState == EnemyState.Chasing && chaseBehavior != null && !chaseBehavior.IsChasing)
             {
                 ChangeState(EnemyState.Returning);
             }
         }
-
 
         private void ChangeState(EnemyState newState)
         {
@@ -549,7 +571,10 @@ namespace GameProjectFM.AI.Core
             switch (exitingState)
             {
                 case EnemyState.Patrolling:
-                    patrolBehavior.StopPatrol();
+                    if (linearPatrolBehavior != null)
+                    {
+                        linearPatrolBehavior.StopPatrol();
+                    }
                     break;
 
                 case EnemyState.Chasing:
@@ -567,7 +592,10 @@ namespace GameProjectFM.AI.Core
             switch (enteringState)
             {
                 case EnemyState.Patrolling:
-                    patrolBehavior.StartPatrol();
+                    if (linearPatrolBehavior != null)
+                    {
+                        linearPatrolBehavior.StartPatrol();
+                    }
                     break;
 
                 case EnemyState.Chasing:
@@ -575,11 +603,17 @@ namespace GameProjectFM.AI.Core
                     break;
 
                 case EnemyState.MovingToTrail:
-                    Debug.Log($"🎯 Moving to trail at {trailBehavior.CurrentTrailTarget}");
+                    if (trailBehavior != null)
+                    {
+                        Debug.Log($"🎯 Moving to trail at {trailBehavior.CurrentTrailTarget}");
+                    }
                     break;
 
                 case EnemyState.InvestigatingTrail:
-                    Debug.Log($"🔍 Starting trail investigation at {trailBehavior.CurrentTrailTarget}");
+                    if (trailBehavior != null)
+                    {
+                        Debug.Log($"🔍 Starting trail investigation at {trailBehavior.CurrentTrailTarget}");
+                    }
                     break;
 
                 case EnemyState.Returning:
@@ -592,7 +626,7 @@ namespace GameProjectFM.AI.Core
 
         #region Event Handlers
 
-        private void HandlePositionChanged(Vector3Int newPosition)
+        private void HandlePositionChanged(Vector3 newPosition)
         {
             Debug.Log($"📍 Position changed to: {newPosition}");
         }
@@ -600,6 +634,15 @@ namespace GameProjectFM.AI.Core
         private void HandleMovementStateChanged(bool isMoving)
         {
             // Movement state changes are handled in update loops
+        }
+
+        private void HandleDestinationReached()
+        {
+            if (currentState == EnemyState.Patrolling)
+            {
+                // Linear patrol behavior handles its own destination logic
+                Debug.Log($"🚶 Destination reached during patrol");
+            }
         }
 
         private void HandlePlayerDetected(Transform player)
@@ -621,10 +664,8 @@ namespace GameProjectFM.AI.Core
             else if (HasTrailsInFOV())
             {
                 Debug.Log("🕵️ Trails detected in FOV - prioritizing trail cleanup over chase");
-                // Trail behavior will automatically start investigating trails in alert state
             }
         }
-
 
         private void HandlePlayerLost()
         {
@@ -649,25 +690,25 @@ namespace GameProjectFM.AI.Core
 
         private void HandlePatrolPointReached()
         {
-            Debug.Log("🚶 Patrol point reached");
+            Debug.Log("🚶 Linear patrol point reached");
         }
 
         private void HandlePatrolCompleted()
         {
-            Debug.Log("🔄 Patrol sequence completed, moving to next point");
+            Debug.Log("🔄 Linear patrol sequence completed, moving to next point");
         }
 
-        private void HandleTrailDetected(Vector3Int trailPosition)
+        private void HandleTrailDetected(Vector3 trailPosition)
         {
             Debug.Log($"🕵️ Trail detected at {trailPosition}");
         }
 
-        private void HandleTrailInvestigationStarted(Vector3Int trailPosition)
+        private void HandleTrailInvestigationStarted(Vector3 trailPosition)
         {
             Debug.Log($"🔍 Trail investigation started at {trailPosition}");
         }
 
-        private void HandleTrailCleaned(Vector3Int trailPosition)
+        private void HandleTrailCleaned(Vector3 trailPosition)
         {
             Debug.Log($"🧹 Trail cleaned at {trailPosition}");
         }
@@ -677,7 +718,7 @@ namespace GameProjectFM.AI.Core
             Debug.Log("✅ Trail investigation completed");
 
             // Check if there are more trails to investigate before returning to patrol
-            if (trailBehavior.HasMoreTrailsToInvestigate())
+            if (trailBehavior != null && trailBehavior.HasMoreTrailsToInvestigate())
             {
                 Debug.Log("🔍 More trails detected, moving to next trail");
                 ChangeState(EnemyState.MovingToTrail);
@@ -704,8 +745,8 @@ namespace GameProjectFM.AI.Core
             // Check if any trail is in FOV
             foreach (Vector3Int trailPos in blockedPositions)
             {
-                Vector3 trailWorldPos = gridMovementSettings.grid.CellToWorld(trailPos);
-                trailWorldPos += gridMovementSettings.grid.cellSize * 0.5f;
+                // Convert grid position to world position (you may need to adjust this based on your trail system)
+                Vector3 trailWorldPos = new Vector3(trailPos.x, trailPos.y, trailPos.z);
 
                 if (fovSystem.IsPositionInFieldOfView(trailWorldPos))
                 {
@@ -715,7 +756,6 @@ namespace GameProjectFM.AI.Core
 
             return false;
         }
-
 
         #endregion
 
@@ -729,9 +769,10 @@ namespace GameProjectFM.AI.Core
         public void PauseAI()
         {
             enabled = false;
-            patrolBehavior.StopPatrol();
-            chaseBehavior.ForceEndChase();
-            trailBehavior.StopInvestigation();
+            if (linearPatrolBehavior != null) linearPatrolBehavior.StopPatrol();
+            if (chaseBehavior != null) chaseBehavior.ForceEndChase();
+            if (trailBehavior != null) trailBehavior.StopInvestigation();
+            if (navMovementSystem != null) navMovementSystem.StopMovement();
         }
 
         public void ResumeAI()
@@ -745,8 +786,18 @@ namespace GameProjectFM.AI.Core
             trailManager = newTrailManager;
             if (trailBehavior != null)
             {
-                trailBehavior.Initialize(trailSettings, fovCleanupSettings, movementSystem, fovSystem, trailManager, gridMovementSettings.grid, detectionSettings.player);
+                trailBehavior.Initialize(trailSettings, fovCleanupSettings, navMovementSystem, fovSystem, trailManager, detectionSettings.player);
             }
+        }
+
+        public void SetLinearPath(LinearPathBehaviour newLinearPath)
+        {
+            linearPathBehaviour = newLinearPath;
+            if (linearPatrolBehavior != null)
+            {
+                linearPatrolBehavior.SetLinearPath(newLinearPath);
+            }
+            Debug.Log($"🔄 LinearPathBehaviour updated: {(newLinearPath != null ? newLinearPath.name : "null")}");
         }
 
         #endregion
@@ -755,7 +806,6 @@ namespace GameProjectFM.AI.Core
 
         void OnValidate()
         {
-            // Safe validation that handles null settings
             EnsureSettingsInitialized();
 
             // Validate settings ranges safely
@@ -766,16 +816,15 @@ namespace GameProjectFM.AI.Core
                 if (fovSettings.fovRange < 0.1f) fovSettings.fovRange = 0.1f;
             }
 
-            if (gridMovementSettings != null)
+            if (navMeshMovementSettings != null)
             {
-                if (gridMovementSettings.moveSpeed < 0.1f) gridMovementSettings.moveSpeed = 0.1f;
-                if (gridMovementSettings.rotationSpeed < 0.1f) gridMovementSettings.rotationSpeed = 0.1f;
+                if (navMeshMovementSettings.moveSpeed < 0.1f) navMeshMovementSettings.moveSpeed = 0.1f;
+                if (navMeshMovementSettings.rotationSpeed < 0.1f) navMeshMovementSettings.rotationSpeed = 0.1f;
             }
 
             // Validate detection settings
             if (detectionSettings != null && detectionSettings.player == null)
             {
-                // Try to find player automatically
                 GameObject playerObj = GameObject.FindGameObjectWithTag("Player");
                 if (playerObj != null)
                 {
@@ -786,6 +835,16 @@ namespace GameProjectFM.AI.Core
                 {
                     Debug.LogWarning("⚠️ No Player found! Assign Player to Detection Settings manually.");
                 }
+            }
+
+            // Validate LinearPathBehaviour
+            if (linearPathBehaviour == null)
+            {
+                Debug.LogWarning("⚠️ LinearPathBehaviour not assigned! AI will not be able to patrol.");
+            }
+            else if (linearPathBehaviour.transform.childCount < 2)
+            {
+                Debug.LogWarning("⚠️ LinearPathBehaviour needs at least 2 child transforms for patrol points!");
             }
 
             // Set default visual colors if not set
@@ -800,14 +859,7 @@ namespace GameProjectFM.AI.Core
                 if (visualSettings.fovBorderColor == Color.clear)
                     visualSettings.fovBorderColor = Color.yellow;
             }
-
-            // Force refresh patrol points from array
-            if (patrolSettings != null)
-            {
-                patrolSettings.RefreshPatrolPoints();
-            }
         }
-
 
         #endregion
 
@@ -815,64 +867,7 @@ namespace GameProjectFM.AI.Core
 
         void OnDrawGizmos()
         {
-            // Draw patrol points and path
-            if (patrolSettings.patrolPoints.Count > 1)
-            {
-                Color pathColor = visualSettings.patrolPathColor != Color.clear ? visualSettings.patrolPathColor : Color.blue;
-                Color pointColor = Color.yellow;
-
-                for (int i = 0; i < patrolSettings.patrolPoints.Count; i++)
-                {
-                    Vector3Int gridPos = patrolSettings.patrolPoints[i];
-
-                    // Skip zero positions (empty array elements)
-                    if (gridPos == Vector3Int.zero && i > 0) continue;
-
-                    Vector3 worldPos = gridMovementSettings.grid != null
-                        ? gridMovementSettings.grid.CellToWorld(gridPos) + gridMovementSettings.grid.cellSize * 0.5f
-                        : new Vector3(gridPos.x, gridPos.y, gridPos.z);
-
-                    // Draw patrol point sphere
-                    Gizmos.color = pointColor;
-                    Gizmos.DrawWireSphere(worldPos, 0.5f);
-                    Gizmos.DrawSphere(worldPos, 0.2f);
-
-                    // Draw point number
-#if UNITY_EDITOR
-                    UnityEditor.Handles.Label(worldPos + Vector3.up * 0.8f, $"P{i}");
-#endif
-
-                    // Draw path connections
-                    if (visualSettings.showPatrolPath)
-                    {
-                        Gizmos.color = pathColor;
-
-                        if (i < patrolSettings.patrolPoints.Count - 1)
-                        {
-                            Vector3Int nextGridPos = patrolSettings.patrolPoints[i + 1];
-                            if (nextGridPos != Vector3Int.zero || i + 1 == 0)
-                            {
-                                Vector3 nextWorldPos = gridMovementSettings.grid != null
-                                    ? gridMovementSettings.grid.CellToWorld(nextGridPos) + gridMovementSettings.grid.cellSize * 0.5f
-                                    : new Vector3(nextGridPos.x, nextGridPos.y, nextGridPos.z);
-
-                                Gizmos.DrawLine(worldPos, nextWorldPos);
-                                DrawArrow(worldPos, nextWorldPos);
-                            }
-                        }
-                        else if (patrolSettings.patrolType == PatrolType.Loop && patrolSettings.patrolPoints.Count > 2)
-                        {
-                            Vector3Int firstGridPos = patrolSettings.patrolPoints[0];
-                            Vector3 firstWorldPos = gridMovementSettings.grid != null
-                                ? gridMovementSettings.grid.CellToWorld(firstGridPos) + gridMovementSettings.grid.cellSize * 0.5f
-                                : new Vector3(firstGridPos.x, firstGridPos.y, firstGridPos.z);
-
-                            Gizmos.DrawLine(worldPos, firstWorldPos);
-                            DrawArrow(worldPos, firstWorldPos);
-                        }
-                    }
-                }
-            }
+            // LinearPathBehaviour will draw its own path, we just add AI state info
 
             // Draw FOV Visualization
             if (visualSettings.showFovInEditor && fovSystem != null && fovSettings.useFovForDetection)
@@ -888,13 +883,19 @@ namespace GameProjectFM.AI.Core
                 Gizmos.DrawWireCube(currentPos, Vector3.one * 0.3f);
 
 #if UNITY_EDITOR
-                Vector3 textPos = transform.position + Vector3.up * 2f;
+                Vector3 textPos = transform.position + Vector3.up * 2.5f;
                 UnityEditor.Handles.Label(textPos, $"State: {currentState}");
+
+                // Show current patrol target if available
+                if (linearPatrolBehavior != null && linearPatrolBehavior.CurrentPatrolTransform != null)
+                {
+                    Vector3 targetTextPos = transform.position + Vector3.up * 3f;
+                    UnityEditor.Handles.Label(targetTextPos, $"Target: {linearPatrolBehavior.CurrentPatrolTransform.name}");
+                }
 #endif
             }
         }
 
-        // FOV Gizmo Drawing
         private void DrawFOVGizmos()
         {
             Vector3 forward = transform.forward;
@@ -913,9 +914,8 @@ namespace GameProjectFM.AI.Core
             Gizmos.DrawRay(position, rightBoundary * fovSettings.fovRange);
 
             // Draw FOV area (filled)
-            if (Application.isPlaying && fovSystem.FOVPoints.Count > 1)
+            if (Application.isPlaying && fovSystem != null && fovSystem.FOVPoints.Count > 1)
             {
-                // Use the calculated FOV points from the system
                 Gizmos.color = visualSettings.fovEditorColor;
                 for (int i = 0; i < fovSystem.FOVPoints.Count - 1; i++)
                 {
@@ -927,7 +927,7 @@ namespace GameProjectFM.AI.Core
             {
                 // Draw static FOV area in editor
                 Gizmos.color = visualSettings.fovEditorColor;
-                int resolution = Mathf.Max(3, fovSettings.fovResolution / 2); // Lower resolution for editor
+                int resolution = Mathf.Max(3, fovSettings.fovResolution / 2);
 
                 float angleStep = fovSettings.fovAngle / resolution;
                 float startAngle = -fovSettings.fovAngle / 2f;
@@ -960,7 +960,6 @@ namespace GameProjectFM.AI.Core
             }
         }
 
-        // Helper methods
         private Vector3 AngleToDirection(float angleInDegrees)
         {
             float angleInRadians = angleInDegrees * Mathf.Deg2Rad;
@@ -976,21 +975,6 @@ namespace GameProjectFM.AI.Core
             Gizmos.DrawLine(points[2], points[0]);
         }
 
-        private void DrawArrow(Vector3 from, Vector3 to)
-        {
-            Vector3 direction = (to - from).normalized;
-            Vector3 right = Vector3.Cross(direction, Vector3.up).normalized;
-            Vector3 midPoint = Vector3.Lerp(from, to, 0.7f);
-
-            float arrowSize = 0.3f;
-            Vector3 arrowHead1 = midPoint - direction * arrowSize + right * arrowSize * 0.5f;
-            Vector3 arrowHead2 = midPoint - direction * arrowSize - right * arrowSize * 0.5f;
-
-            Gizmos.DrawLine(midPoint, arrowHead1);
-            Gizmos.DrawLine(midPoint, arrowHead2);
-        }
-
-        #endregion  // ← DEZE REGEL TOEVOEGEN
-
+        #endregion
     }
 }

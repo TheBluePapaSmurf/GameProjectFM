@@ -85,15 +85,30 @@ public class GridPlayerController : MonoBehaviour
         moveCoroutine = StartCoroutine(MoveToPosition(targetPosition));
     }
 
-    // Check if position is accessible
+    // Add this method to your existing GridPlayerController class
+
+    // Update the existing CanMoveTo method to include obstacle checking
     private bool CanMoveTo(Vector3Int targetPosition)
     {
-        // Als geen trail manager, altijd toestaan
-        if (trailManager == null) return true;
+        // Check trail manager (bestaande functionaliteit)
+        if (trailManager != null && !trailManager.CanMoveToPosition(currentGridPosition, targetPosition))
+        {
+            return false;
+        }
 
-        // Check of target position blocked is
-        return trailManager.CanMoveToPosition(currentGridPosition, targetPosition);
+        // Check obstacles via GridObstacleManager
+        if (GridObstacleManager.Instance != null && GridObstacleManager.Instance.IsPositionBlocked(targetPosition))
+        {
+            if (showBlockedMoveFeedback)
+            {
+                Debug.Log($"Movement blocked by obstacle at position: {targetPosition}");
+            }
+            return false;
+        }
+
+        return true;
     }
+
 
     private void RotateToDirection(Vector2Int direction)
     {
@@ -260,6 +275,7 @@ public class GridPlayerController : MonoBehaviour
     {
         return grid.CellToWorld(gridPosition);
     }
+
 
     void OnDrawGizmos()
     {

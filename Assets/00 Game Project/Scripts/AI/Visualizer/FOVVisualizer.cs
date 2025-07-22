@@ -1,4 +1,4 @@
-using UnityEngine;
+﻿using UnityEngine;
 
 namespace GameProjectFM.AI.Visual
 {
@@ -11,10 +11,15 @@ namespace GameProjectFM.AI.Visual
         [SerializeField] private VisualSettings visualSettings;
         [SerializeField] private FOVSystem fovSystem;
 
+        [Header("Runtime Material Override")]
+        [Tooltip("Override material at runtime. Takes priority over VisualSettings material.")]
+        public Material runtimeMaterialOverride;
+
         // Mesh components for runtime visualization
         private MeshFilter meshFilter;
         private MeshRenderer meshRenderer;
         private Mesh fovMesh;
+        private Material currentMaterial;
 
         public void Initialize(VisualSettings visual, FOVSystem fov)
         {
@@ -32,6 +37,7 @@ namespace GameProjectFM.AI.Visual
             if (visualSettings.showFieldOfView && fovSystem != null)
             {
                 UpdateFOVMesh();
+                CheckMaterialUpdate();
             }
         }
 
@@ -46,16 +52,105 @@ namespace GameProjectFM.AI.Visual
             meshFilter = fovVisualChild.AddComponent<MeshFilter>();
             meshRenderer = fovVisualChild.AddComponent<MeshRenderer>();
 
-            // Create material for FOV
-            Material fovMaterial = new Material(Shader.Find("Universal Render Pipeline/Unlit"));
-            fovMaterial.color = visualSettings.fovColor;
-            fovMaterial.SetFloat("_Surface", 1); // Transparent
-            meshRenderer.material = fovMaterial;
+            // Setup material
+            SetupFOVMaterial();
 
             // Create mesh
             fovMesh = new Mesh();
             fovMesh.name = "FOV Mesh";
             meshFilter.mesh = fovMesh;
+        }
+
+        private void SetupFOVMaterial()
+        {
+            Material materialToUse = GetFOVMaterial();
+
+            if (materialToUse != null)
+            {
+                // Use custom material
+                currentMaterial = new Material(materialToUse);
+                meshRenderer.material = currentMaterial;
+                Debug.Log($"✅ Using custom FOV material: {materialToUse.name}");
+            }
+            else
+            {
+                // Create default material
+                currentMaterial = CreateDefaultFOVMaterial();
+                meshRenderer.material = currentMaterial;
+                Debug.Log("🎨 Using default FOV material with fovColor");
+            }
+        }
+
+        private Material GetFOVMaterial()
+        {
+            // Priority: Runtime Override > VisualSettings Custom Material
+            if (runtimeMaterialOverride != null)
+                return runtimeMaterialOverride;
+
+            if (visualSettings.customFovMaterial != null)
+                return visualSettings.customFovMaterial;
+
+            return null;
+        }
+
+        private Material CreateDefaultFOVMaterial()
+        {
+            Material defaultMaterial = new Material(Shader.Find("Universal Render Pipeline/Unlit"));
+
+            // Apply color from settings
+            defaultMaterial.color = visualSettings.fovColor;
+
+            // Configure transparency for URP
+            SetupTransparencyProperties(defaultMaterial);
+
+            return defaultMaterial;
+        }
+
+        private void SetupTransparencyProperties(Material material)
+        {
+            // Configure material for transparency
+            material.SetFloat("_Surface", 1); // Transparent
+            material.SetFloat("_Blend", 0); // Alpha blend
+            material.SetOverrideTag("RenderType", "Transparent");
+            material.renderQueue = 3000; // Transparent queue
+            material.enableInstancing = false;
+        }
+
+        private void CheckMaterialUpdate()
+        {
+            Material newMaterial = GetFOVMaterial();
+
+            // Check if material has changed
+            bool materialChanged = false;
+
+            if (newMaterial != null && (currentMaterial == null || !AreMaterialsSame(currentMaterial, newMaterial)))
+            {
+                materialChanged = true;
+            }
+            else if (newMaterial == null && currentMaterial != null && currentMaterial.shader.name != "Universal Render Pipeline/Unlit")
+            {
+                materialChanged = true;
+            }
+
+            if (materialChanged)
+            {
+                SetupFOVMaterial();
+            }
+
+            // Update color if using default material
+            if (newMaterial == null && currentMaterial != null)
+            {
+                if (currentMaterial.color != visualSettings.fovColor)
+                {
+                    currentMaterial.color = visualSettings.fovColor;
+                }
+            }
+        }
+
+        private bool AreMaterialsSame(Material mat1, Material mat2)
+        {
+            if (mat1 == null || mat2 == null) return false;
+            return mat1.shader == mat2.shader && mat1.name.Contains(mat2.name);
         }
 
         private void UpdateFOVMesh()
@@ -85,6 +180,34 @@ namespace GameProjectFM.AI.Visual
             fovMesh.vertices = vertices;
             fovMesh.triangles = triangles;
             fovMesh.RecalculateNormals();
+        }
+
+        // Public methods for runtime material control
+        public void SetCustomMaterial(Material material)
+        {
+            runtimeMaterialOverride = material;
+            SetupFOVMaterial();
+        }
+
+        public void ClearCustomMaterial()
+        {
+            runtimeMaterialOverride = null;
+            SetupFOVMaterial();
+        }
+
+        public void SetTransparency(float alpha)
+        {
+            if (currentMaterial != null)
+            {
+                Color currentColor = currentMaterial.color;
+                currentColor.a = Mathf.Clamp01(alpha);
+                currentMaterial.color = currentColor;
+            }
+        }
+
+        public Material GetCurrentMaterial()
+        {
+            return currentMaterial;
         }
 
         void OnDrawGizmos()
@@ -132,6 +255,11 @@ namespace GameProjectFM.AI.Visual
             if (fovMesh != null)
             {
                 DestroyImmediate(fovMesh);
+            }
+
+            if (currentMaterial != null)
+            {
+                DestroyImmediate(currentMaterial);
             }
         }
     }
